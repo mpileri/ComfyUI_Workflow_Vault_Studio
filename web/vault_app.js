@@ -10,6 +10,7 @@ import { renderWizard } from "./vault_wizard.js";
 import { renderGlobalSettings } from "./vault_global_settings.js";
 import { readWindowSizeHint, saveWindowSizeHint, isWindowSize } from "./vault_window_size.js";
 import { isTypingTarget, showShortcutsDialog } from "./vault_shortcuts.js";
+import { normalizeScope } from "./vault_projects.js";
 
 const DEFAULT_FILTERS = () => ({ search: "", status: null, favoritesOnly: false, showArchived: undefined, generationType: null, tags: [] });
 
@@ -20,6 +21,7 @@ export class VaultApp {
     this.view = "grid"; // grid | detail | wizard | settings
     this.selectedEntryId = null;
     this.selectedTab = "overview";
+    this.scope = null; // grid place: null = Library, else {project_id, sequence_id, shot_id}
     this.settingsSection = "info"; // remembered tab within Vault Settings
     this.filters = DEFAULT_FILTERS();
     this.ui = {}; // transient view state that isn't a filter (e.g. tag-search query)
@@ -407,6 +409,21 @@ export class VaultApp {
     }
   }
 
+  // Show the Library (null) or one project / sequence / shot in the grid.
+  async setScope(scope) {
+    if (this.view !== "grid") {
+      const proceed = await this.checkDirty();
+      if (!proceed) return;
+      this.view = "grid";
+      this.selectedEntryId = null;
+    }
+    this.scope = normalizeScope(scope);
+    this.ui.scopeChildQuery = "";
+    this.ui.sidebarOpen = false;
+    this.ui.animateEnter = true;
+    this.render();
+  }
+
   setSidebarOpen(open) {
     this.ui.sidebarOpen = !!open;
     this.render();
@@ -421,6 +438,7 @@ export class VaultApp {
     this.ui = {};
     this.selectedEntryId = null;
     this.selectedTab = "overview";
+    this.scope = null;
     this.wizardOptions = null;
     if (this.view !== "settings") this.view = "grid";
   }

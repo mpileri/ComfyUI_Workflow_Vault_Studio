@@ -6,7 +6,7 @@ import shutil
 from . import config
 from . import examples as examples_mod
 from . import media as media_mod
-from . import storage, utils, versions
+from . import projects, storage, utils, versions
 
 VALID_STATUSES = {"draft", "experimental", "stable", "production", "archived"}
 VALID_GENERATION_TYPES = {"image", "video", "audio", "3d_model", "llm", "api_nodes"}
@@ -63,24 +63,42 @@ def normalize_notes(notes):
     return result
 
 
-def _all_names_and_slugs(vault_root, exclude_slug=None):
+def _all_names_and_slugs(vault_root, exclude_slug=None, context=None):
+    """Lowercased entry names in one place (the library, or one project /
+    sequence / shot: every shot can have its own "Comp Cleanup"), plus every
+    entry folder name in the vault."""
     names = set()
     slugs = set()
+    where = projects.context_key(context)
     for slug in storage.list_entry_slugs(vault_root):
         slugs.add(slug)
         if slug == exclude_slug:
             continue
         manifest = storage.read_manifest(vault_root, slug)
-        if manifest:
+        if manifest and projects.context_key(manifest.get("context")) == where:
             names.add((manifest.get("name") or "").strip().lower())
     return names, slugs
 
 
-def create_entry(vault_root, data):
+def _base_slug(name, codes):
+    """Folder name for an entry: project-scoped entries are prefixed with
+    their project/sequence/shot codes, so same-named copies in different shots
+    stay readable on disk (demo_sq010_sh0010_comp_cleanup)."""
+    return utils.slugify(" ".join(list(codes or []) + [name]))
+
+
+def _name_taken_message(context, codes):
+    where = f" in {' › '.join(codes)}" if context else ""
+    return f"An entry with this name already exists{where}."
+
+
+def create_entry(vault_root, data, context=None, codes=None):
     """data keys: name, description, tags, status, generation_types, favorite,
     folder_id, notes, version_label, custom_label, version_notes,
     workflow (dict), thumbnail ({bytes, filename}),
     examples (list of {...}) each with optional input_files/output_files.
+    `context` is a validated project location (None: the library) and
+    `codes` its project/sequence/shot codes.
     Returns (entry_state, error).
     """
     name = (data.get("name") or "").strip()
@@ -91,9 +109,9 @@ def create_entry(vault_root, data):
     if workflow is None:
         return None, "A workflow JSON snapshot is required."
 
-    names, slugs = _all_names_and_slugs(vault_root)
+    names, slugs = _all_names_and_slugs(vault_root, context=context)
     if name.lower() in names:
-        return None, "An entry with this name already exists."
+        return None, _name_taken_message(context, codes)
 
     status = data.get("status") or "draft"
     if status not in VALID_STATUSES:
@@ -104,7 +122,7 @@ def create_entry(vault_root, data):
         data["generation_types"] if "generation_types" in data else data.get("generation_type")
     )
 
-    base_slug = utils.slugify(name)
+    base_slug = _base_slug(name, codes)
     slug = utils.unique_slug(base_slug, slugs)
     staging_slug = f"{storage.staging_entry_prefix()}{slug}_{utils.generate_id('stage')}"
 
@@ -133,6 +151,7 @@ def create_entry(vault_root, data):
         # filed into a folder. Legacy folder_id values on existing entries are
         # preserved and can be converted to tags (see convert_folders_to_tags).
         "folder_id": None,
+        "context": context,
         "current_version_id": None,
     }
     utils.stamp_created(manifest)
@@ -235,8 +254,12 @@ def create_entry(vault_root, data):
     return entry_state, None
 
 
-def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None, thumbnail_source_file=None, compare_image_file=None, compare_image_source_file=None):
+def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None, thumbnail_source_file=None, compare_image_file=None, compare_image_source_file=None,
+                          context=_UNSET, codes=None):
     """Returns (new_slug, error, warnings).
+
+    `context` (validated by the caller, with its `codes`) moves the entry to
+    another project location; _UNSET leaves it where it is.
 
     `warnings` carries best-effort media that could not be saved. Those are not
     errors — the rest of the update still applies — but they must reach the user
@@ -251,21 +274,27 @@ def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None,
     if "status" in data and data["status"] not in VALID_STATUSES:
         return slug, "Invalid status.", warnings
 
-    if "name" in data:
-        new_name = (data["name"] or "").strip()
+    moving = context is not _UNSET and projects.context_key(context) != projects.context_key(manifest.get("context"))
+    if "name" in data or moving:
+        new_name = (data["name"] or "").strip() if "name" in data else (manifest.get("name") or "")
         if not new_name:
             return slug, "Name is required.", warnings
-        if new_name.lower() != (manifest.get("name") or "").strip().lower():
-            names, slugs = _all_names_and_slugs(vault_root, exclude_slug=slug)
+        target = context if moving else manifest.get("context")
+        if moving or new_name.lower() != (manifest.get("name") or "").strip().lower():
+            names, slugs = _all_names_and_slugs(vault_root, exclude_slug=slug, context=target)
             if new_name.lower() in names:
-                return slug, "An entry with this name already exists.", warnings
+                return slug, _name_taken_message(target, codes), warnings
             # The entry's own slug is not a collision — a new name that
             # slugifies back to the current slug keeps the folder as-is.
             slugs.discard(slug)
-            base_slug = utils.slugify(new_name)
+            if codes is None:
+                codes = projects.context_codes(projects.load(vault_root), target)
+            base_slug = _base_slug(new_name, codes)
             new_slug = utils.unique_slug(base_slug, slugs) if base_slug in slugs else base_slug
         manifest["name"] = new_name
         manifest["slug"] = new_slug
+        if moving:
+            manifest["context"] = context
 
     if "description" in data:
         manifest["description"] = data["description"] or ""
@@ -382,12 +411,15 @@ def delete_entry(vault_root, slug):
     return method, None
 
 
-def duplicate_entry(vault_root, source_slug, new_name):
+def duplicate_entry(vault_root, source_slug, new_name, context=_UNSET, codes=None):
     """Clone an entry into a brand-new entry under new_name: same description,
     tags, status, generation types, favorite, folder, thumbnail, examples, and
     notes — but carrying ONLY the source's current version (a fresh single-
     version history), never the full version history.
-    Returns (entry_state, error)."""
+
+    `context` (validated, with its `codes`) places the copy in another project
+    location — this is how a workflow is copied into shots; _UNSET keeps the
+    source's location. Returns (entry_state, error)."""
     new_name = (new_name or "").strip()
     if not new_name:
         return None, "Name is required."
@@ -395,10 +427,15 @@ def duplicate_entry(vault_root, source_slug, new_name):
     if not src_manifest:
         return None, "Entry not found."
 
-    names, slugs = _all_names_and_slugs(vault_root)
+    if context is _UNSET:
+        context = src_manifest.get("context")
+        codes = None
+    if codes is None:
+        codes = projects.context_codes(projects.load(vault_root), context)
+    names, slugs = _all_names_and_slugs(vault_root, context=context)
     if new_name.lower() in names:
-        return None, "An entry with this name already exists."
-    new_slug = utils.unique_slug(utils.slugify(new_name), slugs)
+        return None, _name_taken_message(context, codes)
+    new_slug = utils.unique_slug(_base_slug(new_name, codes), slugs)
 
     src_dir = storage.entry_dir(vault_root, source_slug)
     dst_dir = storage.entry_dir(vault_root, new_slug)
@@ -415,6 +452,7 @@ def duplicate_entry(vault_root, source_slug, new_name):
     manifest["id"] = utils.generate_id("entry")
     manifest["slug"] = new_slug
     manifest["name"] = new_name
+    manifest["context"] = context
     utils.stamp_created(manifest)
     # A duplicate is a brand-new entry: tag-first, never filed into a folder.
     manifest["folder_id"] = None

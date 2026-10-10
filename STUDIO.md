@@ -58,7 +58,8 @@ export WORKFLOW_VAULT_STUDIO_CONFIG=/mnt/pipeline/comfyui/studio_config.json
 | `group` | The shared Unix group. New files and folders are given this group. |
 | `file_mode` / `dir_mode` | Octal permissions for new files / folders. Defaults `664` / `2775`. |
 | `trash` | `"vault"` (default): deletes go to `<vault>/.trash/`. `"os"`: the deleting artist's own trash. |
-| `admins` | Logins allowed to make vault-wide changes (rename/delete tags, compression settings, accent color, batch re-compress, cleanup) and to delete anyone's work. Empty: everyone is an admin. |
+| `admins` | Logins allowed to make vault-wide changes (rename/delete tags, compression settings, accent color, batch re-compress, cleanup, projects/sequences/shots, ShotGrid sync) and to delete anyone's work. Empty: everyone is an admin. |
+| `shotgrid` | Optional ShotGrid connection for syncing projects (see [ShotGrid sync](#shotgrid-sync)). |
 
 Edits to the config are picked up without restarting ComfyUI.
 
@@ -94,6 +95,43 @@ python vault_admin.py check-permissions                # should say OK
 **Settings → Storage → Vault health → Check vault** also lists permission
 problems in studio mode.
 
+## ShotGrid sync
+
+Projects, sequences and shots can be pulled from ShotGrid (Flow Production
+Tracking) instead of being typed in. Add to the studio config:
+
+```json
+"shotgrid": {
+  "url": "https://yourstudio.shotgrid.autodesk.com",
+  "script_name": "comfyui_vault",
+  "script_key_file": "/etc/comfyui/shotgrid_key",
+  "projects": ["DEMO"]
+}
+```
+
+- Create a **script** in ShotGrid (Admin → Scripts) with read access to
+  Projects, Sequences and Shots; `script_name` is its name.
+- The **script key is a password**. Don't put it in the studio config (every
+  artist can read that file): put it in `$SHOTGRID_SCRIPT_KEY` or in a file only
+  the pipeline account can read (`script_key_file`). `url` and `script_name`
+  can also come from `$SHOTGRID_URL` / `$SHOTGRID_SCRIPT_NAME`.
+- `projects` (optional) limits the sync to these project names or codes;
+  without it, every active non-template project is synced.
+- Install the client where the sync runs: `pip install shotgun-api3`.
+
+Run it from cron on the pipeline machine that holds the key:
+
+```bash
+python vault_admin.py shotgrid-sync
+```
+
+Admins can also sync from the vault sidebar (sync icon) when that machine has
+the key and the package. The sync only adds and updates: ShotGrid-linked items
+follow ShotGrid's codes and names, omitted shots (`omt`) are archived, shots
+without a sequence go under `NO_SEQUENCE`, and nothing is ever deleted, since a
+shot may already hold workflows. Projects/sequences/shots created by hand with
+the same code are linked rather than duplicated.
+
 ## Network storage notes
 
 - **NFS:** cross-machine locking needs the lock manager (built into NFSv4;
@@ -123,6 +161,7 @@ python vault_admin.py fix-permissions [--dry-run]  apply the group + modes every
 python vault_admin.py trash list                   deleted items, who deleted them, when
 python vault_admin.py trash restore <id>           put one back where it was
 python vault_admin.py trash purge --older-than 30  permanently delete old trash
+python vault_admin.py shotgrid-sync                pull projects, sequences and shots from ShotGrid
 ```
 
 ## What artists see
@@ -143,6 +182,7 @@ python vault_admin.py trash purge --older-than 30  permanently delete old trash
 | `WORKFLOW_VAULT_ROOT` | A single shared vault folder (shown as "Studio") |
 | `WORKFLOW_VAULT_GROUP` | The shared group, if not in the config file |
 | `WORKFLOW_VAULT_USER` | Name recorded as author (default: the OS login). Useful when ComfyUI runs under a service account. |
+| `SHOTGRID_URL`, `SHOTGRID_SCRIPT_NAME`, `SHOTGRID_SCRIPT_KEY` | ShotGrid connection (see [ShotGrid sync](#shotgrid-sync)) |
 
 ## Limits
 

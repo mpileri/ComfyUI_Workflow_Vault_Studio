@@ -8,6 +8,40 @@
 > adds cross-machine locking, a shared trash, per-artist favorites, authorship,
 > and admin roles. **Setup guide: [STUDIO.md](STUDIO.md).** Without a studio
 > config it behaves exactly like the original, documented below.
+>
+> It also adds **Projects** (see [below](#projects-studio-edition)): save
+> workflows into a project, a sequence, or a shot, each with its own copies.
+
+## Projects (studio edition)
+
+Next to the studio-wide **Library**, workflows can live in a
+**project → sequence → shot** hierarchy.
+
+- **Sidebar → Projects** lists the Library and every project. Inside a project,
+  click through its sequences and shots (chips with the number of workflows in
+  each). A shot also shows what's saved in its sequence and its project, under
+  *From sequence …* / *From project …*.
+- **Saving:** the save wizard has a **Save to** picker (Library, or a project,
+  sequence or shot) that defaults to the place you're looking at. It shows who
+  you're saving as, and can add your name to the workflow name, e.g.
+  *Comp Cleanup (alice)*, so several artists can each keep a copy in one shot.
+- **Own copies per shot:** open any workflow and use **⋯ → Copy to shots…** to
+  pick shots (or whole sequences / the project) in one go. Each place gets an
+  independent copy with the current version, saved under your name, so
+  tweaking one shot never changes another. Names only need to be unique within
+  the same place.
+- **Moving:** the entry's **Details** tab has a **Location** field.
+- **Creating the structure:** the **+** in the sidebar (new project), then
+  **+ Sequence** / **+ Shots** (paste a list of shot codes) inside it; rename,
+  archive or delete from the **⋯** next to the breadcrumb. A project, sequence
+  or shot can only be deleted when no workflow is saved in it — archive it
+  instead. With studio admins configured, only admins change the structure.
+- **ShotGrid:** projects, sequences and shots can be synced from ShotGrid,
+  from the sidebar (sync icon) or `python vault_admin.py shotgrid-sync`
+  (cron-friendly). See [STUDIO.md](STUDIO.md#shotgrid-sync).
+- On disk, the hierarchy is `projects.json` in the vault root, and each entry's
+  manifest records its `context`; entry folders of project workflows are
+  prefixed with their codes (`demo_sq010_sh0010_comp_cleanup/`).
 
 A local, single-user workflow library built into ComfyUI. Save workflows as
 structured "vault entries" with versions, example media, and Markdown

@@ -48,6 +48,7 @@ DEFAULT_VAULT_SETTINGS = {
         "versions": True,
         "examples": True,
         "date": True,
+        "author": True,  # studio mode: who saved it last
     },
 }
 
@@ -56,7 +57,7 @@ VALID_CARD_SIZES = ("small", "medium", "large", "xlarge")
 VALID_WINDOW_SIZES = ("auto", "compact", "comfortable", "wide", "ultrawide")
 # Old "N per row" choices map to the card size that looked closest.
 _GRID_COLUMNS_TO_CARD_SIZE = {2: "large", 3: "medium", 4: "small"}
-CARD_FIELD_KEYS = ("description", "tags", "versions", "examples", "date")
+CARD_FIELD_KEYS = ("description", "tags", "versions", "examples", "date", "author")
 VALID_COMPRESS_FORMATS = ("webp", "jpeg")
 
 

@@ -143,6 +143,19 @@ export const VaultAPI = {
   reorderExamples: (entryId, order) =>
     postJSON(`/workflow-vault/entries/${encodeURIComponent(entryId)}/examples/reorder`, { order }),
 
+  copyEntryTo: (entryId, targets, name) =>
+    postJSON(`/workflow-vault/entries/${encodeURIComponent(entryId)}/copy-to`, { targets, name }),
+
+  // Projects (project → sequence → shot). `ctx` is {project_id, sequence_id?, shot_id?}.
+  createProject: (body) => postJSON("/workflow-vault/projects", body),
+  createSequence: (projectId, body) =>
+    postJSON(`/workflow-vault/projects/${encodeURIComponent(projectId)}/sequences`, body),
+  createShots: (projectId, sequenceId, codes) =>
+    postJSON(`/workflow-vault/projects/${encodeURIComponent(projectId)}/sequences/${encodeURIComponent(sequenceId)}/shots`, { codes }),
+  updateProjectItem: (ctxAndChanges) => postJSON("/workflow-vault/project-items/update", ctxAndChanges),
+  deleteProjectItem: (ctx) => postJSON("/workflow-vault/project-items/delete", ctx),
+  shotgridSync: () => postJSON("/workflow-vault/shotgrid/sync", {}),
+
   renameTag: (from, to) => postJSON("/workflow-vault/tags/rename", { from, to }),
   deleteTag: (tag) => postJSON("/workflow-vault/tags/delete", { tag }),
 

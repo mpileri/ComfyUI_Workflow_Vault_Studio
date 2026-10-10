@@ -12,6 +12,7 @@ import { renderTagInput, tagCountsFrom } from "./vault_tag_input.js";
 import { renderThumbnailField } from "./vault_thumbnail_input.js";
 import { buildCompareSlider } from "./vault_compare_slider.js";
 import { renderMarkdown } from "./vault_markdown.js";
+import { renderContextPicker, openCopyToDialog, contextLabel, contextResolves, sameContext } from "./vault_projects.js";
 
 // Everything about an entry is one click away: Examples and Versions used to sit
 // two levels down under Settings, so they are tabs of their own now, and the
@@ -37,6 +38,16 @@ export function renderDetailView(controller) {
   titleArea.appendChild(el("div", { className: "wv-detail-title" }, [entry.name]));
   titleArea.appendChild(el("span", { className: `wv-status-badge wv-status-${entry.status}` }, [STATUS_LABELS[entry.status] || entry.status]));
   if (entry.favorite) titleArea.appendChild(el("span", { className: "wv-fav-active wv-detail-fav", title: "Favorite" }, [el("i", { className: "pi pi-star-fill" })]));
+  // Where it lives (project › sequence › shot); a click opens that place.
+  if (entry.context?.project_id && contextResolves(controller.state, entry.context)) {
+    titleArea.appendChild(
+      el(
+        "button",
+        { type: "button", className: "wv-detail-subtitle wv-context-chip", title: "Show this place", onclick: () => controller.setScope(entry.context) },
+        [el("i", { className: "pi pi-video" }), ` ${contextLabel(controller.state, entry.context)}`]
+      )
+    );
+  }
   header.appendChild(titleArea);
 
   header.appendChild(el("div", { className: "wv-topbar-spacer" }));
@@ -65,6 +76,7 @@ export function renderDetailView(controller) {
           moreBtn,
           [
             { label: "Duplicate", icon: "pi pi-clone", onSelect: () => duplicateEntryAction(controller, entry) },
+            { label: "Copy to shots…", icon: "pi pi-copy", onSelect: () => copyToAction(controller, entry) },
             entry.status === "archived"
               ? { label: "Restore from Archive", icon: "pi pi-undo", onSelect: () => restoreEntryAction(controller, entry) }
               : { label: "Archive", icon: "pi pi-inbox", onSelect: () => archiveEntryAction(controller, entry) },
@@ -365,6 +377,10 @@ function renderEntryMetadataForm(controller, entry) {
 
   const favSwitch = toggleField("Favorite", !!entry.favorite, markDirty);
 
+  // Location: move the workflow between the Library and a project place.
+  const showLocation = (controller.state.projects || []).length > 0 || !!entry.context?.project_id;
+  const locationPicker = renderContextPicker(controller.state, entry.context, { onChange: markDirty });
+
   const thumbField = renderThumbnailField({
     currentUrl: entry.thumbnail ? VaultAPI.mediaUrl(entry.id, entry.thumbnail, entry.updated_at) : null,
     clearable: true,
@@ -400,6 +416,7 @@ function renderEntryMetadataForm(controller, entry) {
 
   const leftCol = el("div", { className: "wv-settings-form-col" });
   leftCol.appendChild(formRow("Name", nameInput));
+  if (showLocation) leftCol.appendChild(formRow("Location", locationPicker));
   leftCol.appendChild(formRow("Description", descInput));
   leftCol.appendChild(formRow("Status", statusSelect));
   leftCol.appendChild(formRow("Generation types", genTypePicker));
@@ -449,6 +466,8 @@ function renderEntryMetadataForm(controller, entry) {
         // since this form was rendered (shared studio vaults).
         base_updated_at: entry.updated_at,
       };
+      const location = locationPicker.getContext();
+      if (showLocation && !sameContext(location, entry.context)) data.context = location;
       // Display thumbnail + untouched original (archival), both stamped
       // with the source date. For a video the picker yields an animated
       // WebP (converted server-side) or a still frame; for an image, a
@@ -545,6 +564,11 @@ async function duplicateEntryAction(controller, entry) {
   } catch (e) {
     showToast(e.message, "error");
   }
+}
+
+async function copyToAction(controller, entry) {
+  if (!(await controller.checkDirty())) return; // the copies would not include unsaved edits
+  openCopyToDialog(controller, entry);
 }
 
 async function restoreEntryAction(controller, entry) {

@@ -13,6 +13,7 @@ const CARD_FIELD_DEFS = [
   ["versions", "Version count"],
   ["examples", "Example count"],
   ["date", "Updated date"],
+  ["author", "Saved by (studio)"],
 ];
 
 // Curated accent presets shown as swatches alongside the custom color picker.
@@ -82,7 +83,7 @@ export function renderGlobalSettings(controller) {
       show_archived: showArchivedSwitch.input.checked,
       default_thumbnail_behavior: thumbBehaviorSelect.value,
       accent_color: selectedAccent,
-      card_fields: Object.fromEntries(CARD_FIELD_DEFS.map(([k]) => [k, cardSwitches[k].input.checked])),
+      card_fields: Object.fromEntries(CARD_FIELD_DEFS.filter(([k]) => cardSwitches[k]).map(([k]) => [k, cardSwitches[k].input.checked])),
       compress_examples_on_upload: compressSwitch.input.checked,
       example_compress_format: compressFormat,
       compress_thumbnail_source: sourceSwitch.input.checked,
@@ -309,6 +310,7 @@ export function renderGlobalSettings(controller) {
     "Choose which fields appear on cards in the main grid. This only hides them — nothing is deleted."
   );
   for (const [key, label] of CARD_FIELD_DEFS) {
+    if (key === "author" && !state.studio?.enabled) continue; // only studio vaults record authors
     const sw = switchEl(cardFields[key] !== false);
     cardSwitches[key] = sw;
     sw.input.addEventListener("change", markDirty);

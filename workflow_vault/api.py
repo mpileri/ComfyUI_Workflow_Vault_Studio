@@ -10,8 +10,8 @@ from urllib.parse import urlsplit
 from aiohttp import web
 from server import PromptServer
 
-from . import (config, entries, examples, exporting, folders, locking, media, prefs, storage, studio,
-               utils, versions, video)
+from . import (config, entries, examples, exporting, folders, locking, media, prefs, projects, shotgrid,
+               storage, studio, utils, versions, video)
 
 routes = PromptServer.instance.routes
 
@@ -293,10 +293,24 @@ def _profile_fields():
     return {"profiles": info["profiles"], "active_profile": info["active"], "studio": studio.public_info()}
 
 
+def _resolve_context(vault_root, raw):
+    """Validate a project location sent by the UI. Returns
+    (context or None, codes, error_response)."""
+    registry = projects.load(vault_root)
+    context, err = projects.normalize_context(registry, raw)
+    if err:
+        return None, None, _error(err)
+    return context, projects.context_codes(registry, context), None
+
+
 def _full_state(vault_root):
     state = storage.build_state(vault_root)
     state["vault_root"] = vault_root
     state["initialized"] = True
+    state["projects"] = projects.load(vault_root)["projects"]
+    state["current_user"] = studio.current_user()
+    sg_ok, sg_reason = shotgrid.status()
+    state["shotgrid"] = {"available": sg_ok, "reason": sg_reason}
     state["settings"] = config.load_vault_settings(vault_root)
     state["pillow_available"] = media.pillow_available()
     state["trash_label"] = utils.trash_label()
@@ -622,9 +636,13 @@ async def post_create_entry(request):
 
     # Studio mode: a favorite is the saving artist's own, not the entry's.
     favorite = bool(data.pop("favorite", False)) if studio.enabled() else None
+    context_raw = data.pop("context", None)
 
     async with _write_lock(vault_root):
-        entry, err_msg = entries.create_entry(vault_root, data)
+        context, codes, err = _resolve_context(vault_root, context_raw)
+        if err:
+            return err
+        entry, err_msg = entries.create_entry(vault_root, data, context=context, codes=codes)
         if err_msg:
             return _error(err_msg)
         if favorite:
@@ -652,17 +670,24 @@ async def post_entry_metadata(request):
         conflict = _edit_conflict(manifest, base_updated_at)
         if conflict:
             return conflict
+        move = {}
+        if "context" in data:
+            context, codes, err = _resolve_context(vault_root, data.pop("context"))
+            if err:
+                return err
+            move = {"context": context, "codes": codes}
         if studio.enabled() and "favorite" in data:
             prefs.set_favorite(vault_root, entry_id, bool(data.pop("favorite")))
             # Starring alone touches nothing shared (and must not bump
             # "last updated" for everyone else).
             data.pop("file_mtimes", None)
-            if not data and not files:
+            if not data and not files and not move:
                 return web.json_response(storage.build_entry_state(vault_root, slug))
         new_slug, err_msg, warnings = entries.update_entry_metadata(
             vault_root, manifest, slug, data, files.get("thumbnail"), files.get("thumbnail_source"),
             compare_image_file=files.get("compare_image"),
             compare_image_source_file=files.get("compare_image_source"),
+            **move,
         )
         if err_msg:
             return _error(err_msg)
@@ -741,6 +766,47 @@ async def post_duplicate_entry(request):
         if err_msg:
             return _error(err_msg)
         return web.json_response(state)
+
+
+@_post("/workflow-vault/entries/{entry_id}/copy-to")
+async def post_copy_entry_to(request):
+    """Copy an entry into one or more project locations (typically shots).
+    Each copy is an independent entry carrying the source's current version,
+    saved by whoever made the copy. Places that already have an entry with
+    that name are skipped and reported, never overwritten."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    entry_id = request.match_info["entry_id"]
+    body, err = await _read_json(request)
+    if err:
+        return err
+    targets = body.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return _error("Choose at least one place to copy to.")
+    if len(targets) > 1000:
+        return _error("Copy to at most 1000 places at once.")
+
+    async with _write_lock(vault_root):
+        slug, manifest, err = _require_entry(vault_root, entry_id)
+        if err:
+            return err
+        name = (body.get("name") or "").strip() or manifest.get("name") or ""
+        registry = projects.load(vault_root)
+        copied, skipped = [], []
+        for raw in targets:
+            context, cerr = projects.normalize_context(registry, raw)
+            where = projects.context_label(registry, context) if not cerr else "?"
+            if cerr:
+                skipped.append({"where": where, "reason": cerr})
+                continue
+            codes = projects.context_codes(registry, context)
+            state, derr = await asyncio.to_thread(entries.duplicate_entry, vault_root, slug, name, context, codes)
+            if derr:
+                skipped.append({"where": where, "reason": derr})
+            else:
+                copied.append({"where": where, "id": state["id"]})
+        return web.json_response({"copied": copied, "skipped": skipped})
 
 
 @_post("/workflow-vault/entries/{entry_id}/delete")
@@ -1360,6 +1426,141 @@ async def post_convert_folders_to_tags(request):
     async with _write_lock(vault_root):
         result = await asyncio.to_thread(entries.convert_folders_to_tags, vault_root, allowed)
         return web.json_response({"ok": True, **result, **_full_state(vault_root)})
+
+
+# ---------------------------------------------------------------------------
+# Projects (project -> sequence -> shot)
+# ---------------------------------------------------------------------------
+#
+# Structure changes are vault-wide, so in studio mode with admins configured
+# they're reserved for admins (artists save into what exists). Every route
+# answers with the updated project list.
+
+def _projects_response(vault_root, **extra):
+    return web.json_response({"projects": projects.load(vault_root)["projects"], **extra})
+
+
+def _item_context(body):
+    return {k: body.get(k) for k in ("project_id", "sequence_id", "shot_id")}
+
+
+@_post("/workflow-vault/projects")
+async def post_create_project(request):
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("create projects")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        project, err_msg = projects.create_project(vault_root, body.get("code"), body.get("name"))
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root, item=project)
+
+
+@_post("/workflow-vault/projects/{project_id}/sequences")
+async def post_create_sequence(request):
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("create sequences")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        sequence, err_msg = projects.create_sequence(
+            vault_root, request.match_info["project_id"], body.get("code"), body.get("name"))
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root, item=sequence)
+
+
+@_post("/workflow-vault/projects/{project_id}/sequences/{sequence_id}/shots")
+async def post_create_shots(request):
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("create shots")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        result, err_msg = projects.create_shots(
+            vault_root, request.match_info["project_id"], request.match_info["sequence_id"], body.get("codes"))
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root, created=result["created"], skipped=result["skipped"])
+
+
+@_post("/workflow-vault/project-items/update")
+async def post_update_project_item(request):
+    """Rename, re-code, archive or restore a project, sequence or shot (the
+    deepest id given)."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("change projects, sequences and shots")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        item, err_msg = projects.update_item(
+            vault_root, _item_context(body), code=body.get("code"), name=body.get("name"),
+            archived=body.get("archived"))
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root, item=item)
+
+
+@_post("/workflow-vault/project-items/delete")
+async def post_delete_project_item(request):
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("delete projects, sequences and shots")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        used = projects.ids_in_use(e.get("context") for e in storage.build_state(vault_root)["entries"])
+        err_msg = projects.delete_item(vault_root, _item_context(body), used)
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root)
+
+
+@_post("/workflow-vault/shotgrid/sync")
+async def post_shotgrid_sync(request):
+    """Pull projects, sequences and shots from ShotGrid. The network fetch runs
+    outside the vault lock; only the merge into projects.json holds it."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    err = _require_admin("sync from ShotGrid")
+    if err:
+        return err
+    ok, reason = shotgrid.status()
+    if not ok:
+        return _error(reason)
+    try:
+        data = await asyncio.to_thread(shotgrid.fetch)
+    except Exception as e:  # shotgun_api3 raises its own Fault/AuthenticationFault types
+        return _error(f"ShotGrid sync failed: {e}", 502)
+    async with _write_lock(vault_root):
+        counts = await asyncio.to_thread(shotgrid.sync, vault_root, data)
+        return _projects_response(vault_root, counts=counts, summary=shotgrid.summary(counts))
 
 
 # ---------------------------------------------------------------------------

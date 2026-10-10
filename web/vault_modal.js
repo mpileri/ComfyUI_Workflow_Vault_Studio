@@ -7,6 +7,17 @@ import { openCurrentVersion } from "./vault_detail.js";
 import { buildCompareSlider } from "./vault_compare_slider.js";
 import { tagCountsFrom } from "./vault_tag_input.js";
 import { renderProfileSwitcher } from "./vault_profiles.js";
+import {
+  renderProjectsSidebar,
+  appendScopeCrumbs,
+  renderScopeChildren,
+  entriesAt,
+  parentScopes,
+  findContext,
+  contextLabel,
+  contextResolves,
+  sameContext,
+} from "./vault_projects.js";
 import { showShortcutsDialog } from "./vault_shortcuts.js";
 
 // App version (SemVer). Keep in sync with pyproject.toml; shown in the footer.
@@ -363,11 +374,55 @@ export function renderTopbar(controller) {
 // Grid body (sidebar + cards)
 // ---------------------------------------------------------------------------
 
+// The entries the grid (and the sidebar facet counts) work from: what's saved
+// in the current place. A search in the Library looks in projects too.
+function scopeBase(controller) {
+  const { state } = controller;
+  if (controller.scope) return entriesAt(state, controller.scope);
+  return (controller.filters.search || "").trim() ? state.entries || [] : entriesAt(state, null);
+}
+
+function renderEntryGrid(controller, entries) {
+  const grid = el("div", { className: `wv-grid wv-grid-size-${cardSize(controller)}` });
+  // Cards fade in once after a load or a vault switch — not on every re-render,
+  // or typing in the search box would make the whole grid flicker.
+  if (controller.ui.animateEnter) {
+    grid.classList.add("wv-grid-enter");
+    controller.ui.animateEnter = false;
+  }
+  for (const entry of entries) {
+    grid.appendChild(renderCard(entry, controller));
+  }
+  return grid;
+}
+
+// A shot also shows what's saved in its sequence and project (and a sequence
+// what's saved in its project), each under its own heading.
+function renderInheritedSections(main, controller) {
+  const { state } = controller;
+  for (const parent of parentScopes(controller.scope)) {
+    const entries = filterEntries(controller, entriesAt(state, parent));
+    if (!entries.length) continue;
+    const { project, sequence } = findContext(state, parent);
+    const where = sequence ? `sequence ${sequence.code}` : `project ${project.code}`;
+    main.appendChild(
+      el("div", { className: "wv-section-header wv-inherited-header" }, [
+        el("h3", {}, [`From ${where}`]),
+        el("span", { className: "wv-count-badge" }, [String(entries.length)]),
+        el("button", { type: "button", className: "wv-btn-link", onclick: () => controller.setScope(parent) }, [`Open ${sequence ? sequence.code : project.code}`]),
+      ])
+    );
+    main.appendChild(renderEntryGrid(controller, entries));
+  }
+}
+
 export function renderGridBody(controller) {
   const body = el("div", { className: "wv-body" });
+  if (controller.scope && !contextResolves(controller.state, controller.scope)) controller.scope = null;
 
   const sidebar = el("div", { className: "wv-sidebar" });
   sidebar.appendChild(renderProfileSwitcher(controller));
+  renderProjectsSidebar(sidebar, controller);
   renderGenerationTypeFilter(sidebar, controller);
   renderTagFilter(sidebar, controller);
   sidebar.appendChild(renderSidebarFooter());
@@ -383,23 +438,19 @@ export function renderGridBody(controller) {
 
   const main = el("div", { className: "wv-main" });
   main.appendChild(renderBreadcrumb(controller));
-
-  const entries = filterEntries(controller);
-  if (entries.length === 0) {
-    main.appendChild(renderEmptyState(controller));
-  } else {
-    const grid = el("div", { className: `wv-grid wv-grid-size-${cardSize(controller)}` });
-    // Cards fade in once after a load or a vault switch — not on every re-render,
-    // or typing in the search box would make the whole grid flicker.
-    if (controller.ui.animateEnter) {
-      grid.classList.add("wv-grid-enter");
-      controller.ui.animateEnter = false;
-    }
-    for (const entry of entries) {
-      grid.appendChild(renderCard(entry, controller));
-    }
-    main.appendChild(grid);
+  if (controller.scope) {
+    const children = renderScopeChildren(controller);
+    if (children) main.appendChild(children);
   }
+
+  const base = scopeBase(controller);
+  const entries = filterEntries(controller, base);
+  if (entries.length === 0) {
+    main.appendChild(renderEmptyState(controller, base));
+  } else {
+    main.appendChild(renderEntryGrid(controller, entries));
+  }
+  if (controller.scope) renderInheritedSections(main, controller);
 
   body.appendChild(main);
   return body;
@@ -419,11 +470,11 @@ function renderSidebarFooter() {
 }
 
 function renderGenerationTypeFilter(container, controller) {
-  const { state, filters } = controller;
-  const entries = state.entries || [];
+  const { filters } = controller;
+  const entries = scopeBase(controller);
 
   container.appendChild(
-    el("div", { className: "wv-sidebar-heading-row" }, [
+    el("div", { className: "wv-sidebar-heading-row wv-sidebar-section-gap" }, [
       el("div", { className: "wv-sidebar-heading" }, ["Generation Type"]),
     ])
   );
@@ -471,8 +522,8 @@ function toggleTagFilter(controller, tag) {
 // a single-select gen-type list doesn't: an All/Any match toggle (shown once
 // two or more tags are picked) and a local filter box for large vaults.
 function renderTagFilter(container, controller) {
-  const { state, filters } = controller;
-  const counts = tagCountsFrom(state.entries || []);
+  const { filters } = controller;
+  const counts = tagCountsFrom(scopeBase(controller));
   const selected = filters.tags || [];
   // Selected tags float to the top (so they stay visible in the scroll area),
   // then most-used first, then alphabetical.
@@ -564,7 +615,13 @@ function renderTagFilter(container, controller) {
 function renderBreadcrumb(controller) {
   const row = el("div", { className: "wv-breadcrumb" });
 
-  row.appendChild(el("span", { className: "wv-breadcrumb-item wv-breadcrumb-active" }, ["All Workflows"]));
+  if (controller.scope) {
+    appendScopeCrumbs(row, controller);
+  } else {
+    // Once the vault has projects, the unscoped grid is the studio Library.
+    const title = (controller.state.projects || []).length ? "Library" : "All Workflows";
+    row.appendChild(el("span", { className: "wv-breadcrumb-item wv-breadcrumb-active" }, [title]));
+  }
 
   // Active tag filters show as removable chips after the page title, spaced by
   // the breadcrumb's flex gap. Tags always combine with AND.
@@ -634,9 +691,9 @@ function cardSize(controller) {
   return CARD_SIZES.some(([value]) => value === size) ? size : "medium";
 }
 
-function filterEntries(controller) {
+function filterEntries(controller, base) {
   const { state, filters } = controller;
-  let entries = state.entries || [];
+  let entries = base || state.entries || [];
 
   if (filters.status) {
     entries = entries.filter((e) => e.status === filters.status);
@@ -777,6 +834,17 @@ function renderCard(entry, controller) {
 
   const body = el("div", { className: "wv-card-body" });
   body.appendChild(el("div", { className: "wv-card-title", title: entry.name }, [entry.name]));
+  // Where a project workflow lives, when the grid is showing it from elsewhere
+  // (a Library search, or a shot's inherited sequence/project workflows).
+  const { state } = controller;
+  if (entry.context?.project_id && !sameContext(entry.context, controller.scope) && contextResolves(state, entry.context)) {
+    body.appendChild(
+      el("div", { className: "wv-card-context", title: `Saved in ${contextLabel(state, entry.context)}` }, [
+        el("i", { className: "pi pi-video" }),
+        contextLabel(state, entry.context),
+      ])
+    );
+  }
 
   // Cosmetic field visibility — these toggles only hide/show, they never change
   // the underlying entry data. Missing/undefined keys default to visible.
@@ -848,6 +916,20 @@ function renderCard(entry, controller) {
       ])
     );
   }
+  // Studio mode: who saved it last (the author of the latest change).
+  const author = entry.updated_by || entry.created_by;
+  if (show("author") && state.studio?.enabled && author) {
+    footerItems.push(
+      el(
+        "span",
+        {
+          className: "wv-card-footer-item wv-card-author",
+          title: entry.created_by && entry.created_by !== author ? `Last saved by ${author} · created by ${entry.created_by}` : `Saved by ${author}`,
+        },
+        [el("i", { className: "pi pi-user" }), author]
+      )
+    );
+  }
   if (footerItems.length) {
     body.appendChild(el("div", { className: "wv-card-footer" }, footerItems));
   }
@@ -871,12 +953,28 @@ async function toggleFavorite(controller, entry) {
 // Empty state
 // ---------------------------------------------------------------------------
 
-function renderEmptyState(controller) {
-  const { state, filters } = controller;
-  const hasAnyEntries = (state.entries || []).length > 0;
+function renderEmptyState(controller, base) {
+  const { state } = controller;
+  const hasAnyEntries = (base || state.entries || []).length > 0;
   const wrap = el("div", { className: "wv-empty" });
 
-  if (!hasAnyEntries) {
+  if (!hasAnyEntries && controller.scope) {
+    const where = contextLabel(state, controller.scope);
+    wrap.appendChild(el("div", { className: "wv-empty-icon" }, [el("i", { className: "pi pi-video" })]));
+    wrap.appendChild(el("div", { className: "wv-empty-title" }, [`Nothing saved in ${where} yet`]));
+    wrap.appendChild(
+      el("div", { className: "wv-empty-text" }, [
+        "Save the current canvas here, or open a workflow from the Library and use ⋯ › Copy to shots… to give this place its own copy.",
+      ])
+    );
+    wrap.appendChild(
+      el(
+        "button",
+        { className: "wv-btn wv-btn-primary", onclick: () => controller.openWizard({ mode: "full", context: controller.scope }) },
+        [`Save current workflow to ${where}`]
+      )
+    );
+  } else if (!hasAnyEntries) {
     wrap.appendChild(el("div", { className: "wv-empty-icon" }, [el("i", { className: "pi pi-inbox" })]));
     wrap.appendChild(el("div", { className: "wv-empty-title" }, ["Your vault is empty"]));
     wrap.appendChild(

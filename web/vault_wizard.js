@@ -10,6 +10,7 @@ import { renderMediaPicker, convertFlaggedMedia } from "./vault_media_picker.js"
 import { renderNotesEditor } from "./vault_notes_editor.js";
 import { getCurrentWorkflowJSON, getWorkflowVaultOrigin, getCurrentWorkflowName } from "./vault_workflow.js";
 import { activeProfile } from "./vault_profiles.js";
+import { renderContextPicker, contextLabel, sameContext } from "./vault_projects.js";
 
 export function renderWizard(controller) {
   const wrap = el("div", { className: "wv-wizard" });
@@ -20,10 +21,13 @@ export function renderWizard(controller) {
   );
   // With more than one vault, say which one this save will land in.
   const savingTo = (controller.state.profiles || []).length > 1 ? activeProfile(controller.state) : null;
+  // Every save is recorded under the artist's name; say so up front.
+  const user = controller.state.current_user;
   header.appendChild(
     el("div", { className: "wv-detail-title-area" }, [
       el("div", { className: "wv-detail-title" }, ["Save Current Workflow"]),
       ...(savingTo ? [el("div", { className: "wv-detail-subtitle" }, [`Saving to vault: ${savingTo.name}`])] : []),
+      ...(user ? [el("div", { className: "wv-detail-subtitle", title: "Saves are recorded with your name" }, [el("i", { className: "pi pi-user" }), ` Saving as ${user}`])] : []),
     ])
   );
   header.appendChild(el("div", { className: "wv-topbar-spacer" }));
@@ -147,6 +151,15 @@ function renderCreateForm(controller) {
   // Default the name to the current ComfyUI tab's name (blank if the tab is
   // unsaved/untitled). The user can overwrite it before saving.
   const nameInput = el("input", { className: "wv-input", type: "text", placeholder: "Workflow name", value: getCurrentWorkflowName() });
+  // Where it's saved: the Library, or a project / sequence / shot. Defaults to
+  // the place the grid was showing (or the one the wizard was opened for).
+  const user = controller.state.current_user || "";
+  const projectsExist = (controller.state.projects || []).length > 0;
+  const startContext = controller.wizardOptions && "context" in controller.wizardOptions ? controller.wizardOptions.context : controller.scope;
+  const locationPicker = renderContextPicker(controller.state, startContext, { onChange: () => markDirty() });
+  // Optionally tag the name with who saved it, e.g. "Comp Cleanup (alice)", so
+  // several artists can each keep their own copy in the same shot.
+  const addNameSwitch = toggleField(`Add my name to the workflow name${user ? ` (${user})` : ""}`, false, markDirty);
   const descInput = el("textarea", { className: "wv-input wv-textarea", placeholder: "What does this workflow do?" });
   const tagInput = renderTagInput({
     tags: [],
@@ -185,7 +198,9 @@ function renderCreateForm(controller) {
   tagInput.addEventListener("change", () => { tagErr.style.display = "none"; });
 
   const left = el("div", { className: "wv-wizard-left" });
+  if (projectsExist || startContext) left.appendChild(formRow("Save to", locationPicker));
   left.appendChild(reqRow("Name", nameInput, nameErr));
+  if (user) left.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch]));
   left.appendChild(formRow("Description", descInput));
   left.appendChild(reqRow("Tags", tagInput, tagErr));
   left.appendChild(reqRow("Status", statusSelect, statusErr));
@@ -316,7 +331,9 @@ function renderCreateForm(controller) {
       firstBad.scrollIntoView?.({ block: "nearest" });
       return false;
     }
-    const name = nameInput.value.trim();
+    let name = nameInput.value.trim();
+    const suffix = ` (${user})`;
+    if (addNameSwitch.input.checked && user && !name.endsWith(suffix)) name += suffix;
     const workflow = getCurrentWorkflowJSON();
     if (countNodes(workflow) === 0) {
       status.textContent = "The canvas is empty — add nodes before saving.";
@@ -340,6 +357,7 @@ function renderCreateForm(controller) {
         custom_label: customLabelInput.value.trim() || null,
         version_notes: versionNotesInput.value,
         notes: notesEditor.getNotes(),
+        context: locationPicker.getContext(),
         workflow,
       };
 
@@ -466,7 +484,13 @@ function renderUpdateForm(controller) {
     },
   });
 
-  const entries = [...(controller.state.entries || [])].sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  // Workflows in the place the grid is showing come first, then the rest, each
+  // most recently updated first.
+  const here = (e) => (sameContext(e.context, controller.scope) ? 0 : 1);
+  const entries = [...(controller.state.entries || [])].sort(
+    (a, b) => here(a) - here(b) || (b.updated_at || "").localeCompare(a.updated_at || "")
+  );
+  const optionLabel = (e) => (e.context?.project_id ? `${e.name} — ${contextLabel(controller.state, e.context)}` : e.name);
 
   // Pre-select the entry this canvas was opened from, if known.
   const preselectId = controller.wizardOptions?.updateEntryId;
@@ -475,7 +499,7 @@ function renderUpdateForm(controller) {
   const entrySelect = el(
     "select",
     { className: "wv-input" },
-    entries.map((e) => el("option", { value: e.id, selected: e.id === preselectId }, [e.name]))
+    entries.map((e) => el("option", { value: e.id, selected: e.id === preselectId }, [optionLabel(e)]))
   );
   entrySelect.addEventListener("change", markDirty);
 

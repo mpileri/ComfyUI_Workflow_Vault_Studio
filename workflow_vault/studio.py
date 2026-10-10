@@ -152,6 +152,7 @@ def _normalize(raw, path, error):
         "dir_mode": _parse_mode(raw.get("dir_mode"), DEFAULT_DIR_MODE, 0o700),
         "trash": trash,
         "admins": admins,
+        "shotgrid": raw.get("shotgrid") if isinstance(raw.get("shotgrid"), dict) else None,
     }
 
 

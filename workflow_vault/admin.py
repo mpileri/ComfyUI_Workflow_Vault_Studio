@@ -9,6 +9,7 @@ Run from the extension folder (no ComfyUI needed):
     python vault_admin.py trash list
     python vault_admin.py trash restore <id>
     python vault_admin.py trash purge --older-than 30
+    python vault_admin.py shotgrid-sync         # pull projects/sequences/shots (cron-able)
 
 Every command takes --vault <id or path> (default: the studio's default vault).
 """
@@ -18,9 +19,10 @@ import os
 import shutil
 import stat
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
-from . import config, storage, studio, utils
+from . import config, locking, shotgrid, storage, studio, utils
 
 
 def _fail(message):
@@ -269,6 +271,32 @@ def cmd_trash_purge(args):
     print(f"Purged {len(doomed)} item(s).")
 
 
+# ---------------------------------------------------------------------------
+# ShotGrid
+# ---------------------------------------------------------------------------
+
+def cmd_shotgrid_sync(args):
+    root = _resolve_vault(args.vault)
+    if not config.is_initialized(root):
+        _fail(f"{root} is not an initialized vault (run: init).")
+    ok, reason = shotgrid.status()
+    if not ok:
+        _fail(reason)
+    data = shotgrid.fetch()
+    lock = locking.VaultFileLock(root)
+    deadline = time.time() + 120
+    while not lock.try_acquire():
+        if time.time() > deadline:
+            lock.release()
+            _fail("the vault stayed busy for 2 minutes; try again later.")
+        time.sleep(0.5)
+    try:
+        counts = shotgrid.sync(root, data)
+    finally:
+        lock.release()
+    print(f"ShotGrid sync done: {shotgrid.summary(counts)}.")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vault_admin.py", description="Manage a shared (studio) Workflow Vault.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -287,6 +315,8 @@ def main(argv=None):
     p = add("fix-permissions", cmd_fix_permissions, "give the whole vault the studio's group and permissions")
     p.add_argument("--group", help="Unix group to own the vault (default: from the studio config)")
     p.add_argument("--dry-run", action="store_true", help="only show what would change")
+
+    add("shotgrid-sync", cmd_shotgrid_sync, "pull projects, sequences and shots from ShotGrid")
 
     trash = sub.add_parser("trash", help="list, restore or purge deleted items").add_subparsers(dest="trash_command", required=True)
     for name, func, help_text in (

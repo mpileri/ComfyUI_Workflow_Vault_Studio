@@ -4720,3 +4720,213 @@
 .wv-vs-locked-hint {
   margin: 10px 0 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Projects (project → sequence → shot)
+   --------------------------------------------------------------------------- */
+
+.wv-sidebar-heading-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.wv-scope-row {
+  cursor: pointer;
+}
+
+.wv-scope-row:hover {
+  background: var(--wv-hover-bg);
+}
+
+.wv-scope-sub {
+  color: var(--wv-muted);
+  font-weight: 400;
+}
+
+.wv-scope-archived {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.wv-breadcrumb-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--wv-muted);
+}
+
+.wv-breadcrumb-link:hover {
+  color: var(--wv-fg);
+  text-decoration: underline;
+}
+
+.wv-scope-title-name {
+  font-size: 14px;
+  color: var(--wv-muted);
+}
+
+.wv-scope-children {
+  margin: -4px 0 18px;
+}
+
+.wv-scope-children-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.wv-scope-filter {
+  max-width: 220px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.wv-scope-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wv-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--wv-border);
+  border-radius: 999px;
+  background: var(--wv-surface);
+  color: var(--wv-fg);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.wv-scope-chip:hover {
+  border-color: var(--wv-accent);
+}
+
+.wv-scope-chip-empty {
+  color: var(--wv-muted);
+}
+
+.wv-scope-chip-count {
+  color: var(--wv-muted);
+  font-size: 11px;
+}
+
+.wv-scope-chip-add {
+  border-style: dashed;
+  color: var(--wv-accent);
+  background: none;
+}
+
+.wv-inherited-header {
+  margin-top: 26px;
+}
+
+.wv-inherited-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.wv-card-context {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--wv-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wv-card-author {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wv-context-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wv-context-picker select {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.wv-context-chip {
+  background: none;
+  color: var(--wv-accent);
+  cursor: pointer;
+}
+
+.wv-context-chip:hover {
+  border-color: var(--wv-accent);
+}
+
+.wv-addname-row {
+  margin-top: -6px;
+}
+
+.wv-copyto-dialog {
+  width: min(640px, 92vw);
+  max-width: 640px;
+}
+
+.wv-copyto-pickers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.wv-copyto-pickers label {
+  grid-column: 1 / -1;
+}
+
+.wv-copyto-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.wv-copyto-seq {
+  border-top: 1px solid var(--wv-border);
+  padding-top: 8px;
+}
+
+.wv-copyto-seq-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wv-copyto-shots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 6px 0 0 22px;
+}
+
+.wv-copyto-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.wv-copyto-level {
+  font-weight: 600;
+}
+
+.wv-dialog-footer .wv-muted {
+  font-size: 12px;
+  align-self: center;
+}
