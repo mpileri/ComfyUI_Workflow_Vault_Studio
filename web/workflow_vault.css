@@ -4940,3 +4940,8 @@
 .wv-sharing-actions {
   justify-content: space-between;
 }
+
+.wv-addname-preview {
+  margin-top: 4px;
+  font-family: var(--wv-mono, ui-monospace, monospace);
+}

@@ -55,8 +55,10 @@ vault.
 
 ## Conventions
 
-- Every mutating route is registered with `_post()` (CSRF guard and
-  "vault busy" handling). Each read-modify-write runs inside
+- Register routes with `_get()` / `_post()`, never `routes.get/post`
+  directly. Both record the artist's ComfyUI login (Comfy-User header) for
+  `studio.current_user()`; `_post()` adds the CSRF guard and "vault busy"
+  handling. Each read-modify-write runs inside
   `async with _write_lock(vault_root)`.
 - Write vault files only through `utils.atomic_write_*` and create folders
   with `utils.makedirs`: they apply the shared permissions. Never call

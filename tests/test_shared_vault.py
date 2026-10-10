@@ -5,14 +5,16 @@ just a vault folder shared from the UI (shared_vault.json).
 """
 
 import asyncio
+import json
 import os
 import stat
 import sys
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_studio_mode import WORKFLOW, StudioTestCase  # noqa: E402
+from test_studio_mode import WORKFLOW, StudioTestCase, _PromptServer  # noqa: E402
 
 from workflow_vault import config, sharing, studio  # noqa: E402
 
@@ -166,6 +168,50 @@ class SharingAdminsTest(SharedVaultTestCase):
                     st = os.lstat(os.path.join(dirpath, f))
                     self.assertEqual(oct(stat.S_IMODE(st.st_mode)), oct(studio.GROUP_FILE_MODE))
                     self.assertEqual(st.st_gid, self.gid)
+
+
+class ComfyLoginTest(SharedVaultTestCase):
+    """ComfyUI's own user accounts (--multi-user): the browser sends the user
+    id in a Comfy-User header and that login is who the artist is."""
+
+    UID = "j-doe_123e4567-e89b-12d3-a456-426614174000"
+
+    async def asyncTearDown(self):
+        if hasattr(_PromptServer.instance, "user_manager"):
+            del _PromptServer.instance.user_manager
+        await super().asyncTearDown()
+
+    async def save_as(self, header, name):
+        from aiohttp import FormData
+        form = FormData()
+        form.add_field("data", json.dumps({"name": name, "workflow": WORKFLOW}), content_type="application/json")
+        resp = await self.client.post("/workflow-vault/entries", data=form, headers={"Comfy-User": header})
+        body = await resp.json()
+        self.assertEqual(resp.status, 200, body)
+        return body
+
+    async def test_comfyui_login_names_the_artist(self):
+        await self.share()
+        _PromptServer.instance.user_manager = types.SimpleNamespace(users={self.UID: "j.doe"})
+        entry = await self.save_as(self.UID, "Comp")
+        self.assertEqual(entry["created_by"], "j.doe")
+        resp = await self.client.get("/workflow-vault/state", headers={"Comfy-User": self.UID})
+        state = await resp.json()
+        self.assertEqual(state["current_user"], "j.doe")
+        self.assertEqual(state["studio"]["user"], "j.doe")
+        # Requests without the header are still whoever runs ComfyUI.
+        state = await self.get("/workflow-vault/state")
+        self.assertEqual(state["current_user"], "alice")
+
+    async def test_falls_back_to_the_id_without_its_uuid(self):
+        await self.share()
+        entry = await self.save_as("k-roe_123e4567-e89b-12d3-a456-426614174000", "Comp")
+        self.assertEqual(entry["created_by"], "k-roe")
+
+    async def test_single_user_comfyui_uses_the_computer_login(self):
+        await self.share()
+        entry = await self.save_as("default", "Comp")
+        self.assertEqual(entry["created_by"], "alice")
 
 
 if __name__ == "__main__":

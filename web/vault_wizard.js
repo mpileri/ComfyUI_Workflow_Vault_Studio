@@ -94,6 +94,31 @@ export function renderWizard(controller) {
   return wrap;
 }
 
+// "comp_cleanup" + "j.doe" -> "comp_cleanup_j.doe" (spaces in a login become
+// underscores). Never adds the name twice.
+function withUserName(name, user) {
+  const suffix = `_${String(user).trim().replace(/\s+/g, "_")}`;
+  return name.endsWith(suffix) ? name : `${name}${suffix}`;
+}
+
+const ADD_NAME_PREF_KEY = "workflowVault.addMyNameToSaves";
+
+function readAddNamePref() {
+  try {
+    return window.localStorage.getItem(ADD_NAME_PREF_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeAddNamePref(on) {
+  try {
+    window.localStorage.setItem(ADD_NAME_PREF_KEY, on ? "1" : "0");
+  } catch {
+    // Private windows can refuse storage; the switch still works for this save.
+  }
+}
+
 function formRow(label, input) {
   return el("div", { className: "wv-form-row" }, [el("label", {}, [label]), input]);
 }
@@ -157,9 +182,22 @@ function renderCreateForm(controller) {
   const projectsExist = (controller.state.projects || []).length > 0;
   const startContext = controller.wizardOptions && "context" in controller.wizardOptions ? controller.wizardOptions.context : controller.scope;
   const locationPicker = renderContextPicker(controller.state, startContext, { onChange: () => markDirty() });
-  // Optionally tag the name with who saved it, e.g. "Comp Cleanup (alice)", so
-  // several artists can each keep their own copy in the same shot.
-  const addNameSwitch = toggleField(`Add my name to the workflow name${user ? ` (${user})` : ""}`, false, markDirty);
+  // Optionally tag the name with who saved it, e.g. "comp_cleanup_j.doe", so
+  // several artists can each keep their own copy in the same shot. The name is
+  // the artist's ComfyUI login (or computer login), and the choice is
+  // remembered for next time.
+  const addNameSwitch = toggleField("Add my name to the workflow name", readAddNamePref(), (on) => {
+    writeAddNamePref(on);
+    paintNamePreview();
+    markDirty();
+  });
+  const namePreview = el("div", { className: "wv-radio-desc wv-addname-preview" });
+  const paintNamePreview = () => {
+    const on = addNameSwitch.input.checked;
+    namePreview.style.display = on ? "" : "none";
+    namePreview.textContent = on ? `Saved as: ${withUserName(nameInput.value.trim() || "workflow", user)}` : "";
+  };
+  nameInput.addEventListener("input", paintNamePreview);
   const descInput = el("textarea", { className: "wv-input wv-textarea", placeholder: "What does this workflow do?" });
   const tagInput = renderTagInput({
     tags: [],
@@ -200,7 +238,10 @@ function renderCreateForm(controller) {
   const left = el("div", { className: "wv-wizard-left" });
   if (projectsExist || startContext) left.appendChild(formRow("Save to", locationPicker));
   left.appendChild(reqRow("Name", nameInput, nameErr));
-  if (user) left.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch]));
+  if (user) {
+    left.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch, namePreview]));
+    paintNamePreview();
+  }
   left.appendChild(formRow("Description", descInput));
   left.appendChild(reqRow("Tags", tagInput, tagErr));
   left.appendChild(reqRow("Status", statusSelect, statusErr));
@@ -332,8 +373,7 @@ function renderCreateForm(controller) {
       return false;
     }
     let name = nameInput.value.trim();
-    const suffix = ` (${user})`;
-    if (addNameSwitch.input.checked && user && !name.endsWith(suffix)) name += suffix;
+    if (addNameSwitch.input.checked && user) name = withUserName(name, user);
     const workflow = getCurrentWorkflowJSON();
     if (countNodes(workflow) === 0) {
       status.textContent = "The canvas is empty — add nodes before saving.";

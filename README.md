@@ -25,8 +25,9 @@ Next to the studio-wide **Library**, workflows can live in a
   *From sequence …* / *From project …*.
 - **Saving:** the save wizard has a **Save to** picker (Library, or a project,
   sequence or shot) that defaults to the place you're looking at. It shows who
-  you're saving as, and can add your name to the workflow name, e.g.
-  *Comp Cleanup (alice)*, so several artists can each keep a copy in one shot.
+  you're saving as, and **Add my name to the workflow name** appends your login,
+  e.g. `comp_cleanup_j.doe`, so several artists can each keep a copy in one
+  shot (with a live preview; the switch remembers your choice).
 - **Own copies per shot:** open any workflow and use **⋯ → Copy to shots…** to
   pick shots (or whole sequences / the project) in one go. Each place gets an
   independent copy with the current version, saved under your name, so

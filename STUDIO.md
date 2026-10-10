@@ -44,6 +44,22 @@ saved. With no admins listed, everyone can do everything.
 Outside shared vaults, files are now created with normal permissions instead
 of owner-only.
 
+## Who is who
+
+The vault records every save under the artist's name and uses that name for
+personal favorites, admins, and the optional "Add my name to the workflow
+name" (`comp_cleanup_j.doe`). The name comes from:
+
+1. **The artist's ComfyUI login**, when ComfyUI runs with its user accounts
+   (`--multi-user`, where each artist picks or creates their user in the
+   browser). This is what tells artists apart when several share one ComfyUI.
+2. Otherwise `$WORKFLOW_VAULT_USER`, if set.
+3. Otherwise the computer login of whoever runs ComfyUI.
+
+ComfyUI's user accounts aren't passwords: anyone can pick any user in the
+browser. The names keep honest people from overwriting each other; they don't
+stop someone determined.
+
 ## Who can open a shared vault
 
 - **Default: everyone who can open the folder** can read and change the vault

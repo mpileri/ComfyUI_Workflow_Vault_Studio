@@ -28,11 +28,14 @@ A vault becomes shared in one of two ways:
      WORKFLOW_VAULT_GROUP  the Unix group every artist shares
    See studio_config.example.json for every key.
 
-WORKFLOW_VAULT_USER overrides the name recorded as author (default: the OS login).
+Who the artist is (recorded as author, used for favorites and admins): their
+ComfyUI login when ComfyUI runs with --multi-user, else $WORKFLOW_VAULT_USER,
+else the OS login.
 
 Any other vault stays private and behaves exactly like upstream.
 """
 
+import contextvars
 import getpass
 import json
 import os
@@ -64,6 +67,9 @@ _DEPLOYMENT_CACHE = {"key": None, "config": None}
 _POLICY_CACHE = {}  # cache key -> policy
 _REALPATHS = {}     # vault root as given -> realpath
 _ACTIVE = {"root": None}
+# The ComfyUI login of the request being handled (set by the API for each
+# request; asyncio.to_thread carries it into worker threads).
+_REQUEST_USER = contextvars.ContextVar("workflow_vault_request_user", default=None)
 
 
 def config_path():
@@ -339,11 +345,22 @@ def enabled():
 # Who is working
 # ---------------------------------------------------------------------------
 
+def set_request_user(name):
+    """Record the artist's ComfyUI login for the current request. Returns a
+    token for reset_request_user."""
+    return _REQUEST_USER.set(name or None)
+
+
+def reset_request_user(token):
+    _REQUEST_USER.reset(token)
+
+
 def current_user():
-    """Who is saving. Each artist runs ComfyUI as themselves, so the OS login
-    is the natural identity; WORKFLOW_VAULT_USER overrides it (e.g. when
-    ComfyUI runs under a service account)."""
-    name = os.environ.get("WORKFLOW_VAULT_USER")
+    """Who is saving: the artist's ComfyUI login (ComfyUI started with
+    --multi-user; needed when several artists share one ComfyUI, since they'd
+    all have the same OS login), else $WORKFLOW_VAULT_USER, else the OS login
+    of whoever runs ComfyUI."""
+    name = _REQUEST_USER.get() or os.environ.get("WORKFLOW_VAULT_USER")
     if not name:
         try:
             name = getpass.getuser()

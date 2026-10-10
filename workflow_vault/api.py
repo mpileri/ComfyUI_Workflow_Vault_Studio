@@ -97,11 +97,57 @@ def _guard_csrf(handler):
     return wrapped
 
 
+# ComfyUI's own user accounts (ComfyUI started with --multi-user): the browser
+# sends the chosen user's id, "<name>_<uuid>", in a Comfy-User header, and
+# ComfyUI's user manager maps it back to the name the artist logged in with.
+_UUID_SUFFIX_RE = re.compile(r"_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _comfy_user(request):
+    """The artist's ComfyUI login for this request, or None (single-user
+    ComfyUI, where the OS login identifies the artist instead)."""
+    user_id = (request.headers.get("Comfy-User") or "").strip()
+    if not user_id or user_id == "default":
+        return None
+    name = None
+    try:
+        users = getattr(getattr(PromptServer.instance, "user_manager", None), "users", None)
+        if isinstance(users, dict):
+            name = users.get(user_id)
+    except Exception:
+        name = None
+    if not isinstance(name, str) or not name.strip():
+        name = _UUID_SUFFIX_RE.sub("", user_id)
+    return " ".join(name.split())[:64] or None
+
+
+def _as_request_user(handler):
+    """Run a route with the artist's ComfyUI login recorded, so authorship,
+    favorites and admin checks follow whoever made the request."""
+    @functools.wraps(handler)
+    async def wrapped(request):
+        token = studio.set_request_user(_comfy_user(request))
+        try:
+            return await handler(request)
+        finally:
+            studio.reset_request_user(token)
+
+    return wrapped
+
+
+def _get(path):
+    """Register a GET route (with the request's ComfyUI user)."""
+    def decorator(handler):
+        return routes.get(path)(_as_request_user(handler))
+
+    return decorator
+
+
 def _post(path):
     """Register a CSRF-guarded POST route. Mutating endpoints use this instead
     of routes.post() so the check can never be forgotten on a new route."""
     def decorator(handler):
-        return routes.post(path)(_guard_csrf(handler))
+        return routes.post(path)(_as_request_user(_guard_csrf(handler)))
 
     return decorator
 
@@ -390,7 +436,7 @@ async def _studio_vault_problem():
     return None
 
 
-@routes.get("/workflow-vault/state")
+@_get("/workflow-vault/state")
 async def get_state(request):
     studio_error = await _studio_vault_problem() if studio.deployment() else None
     vault_root = config.get_vault_root()
@@ -412,7 +458,7 @@ async def get_state(request):
     return web.json_response(_full_state(vault_root))
 
 
-@routes.get("/workflow-vault/settings")
+@_get("/workflow-vault/settings")
 async def get_settings(request):
     vault_root = config.get_vault_root()
     initialized = bool(vault_root and config.is_initialized(vault_root))
@@ -563,7 +609,7 @@ def _profiles_response(**extra):
     return web.json_response({**_profile_fields(), **extra})
 
 
-@routes.get("/workflow-vault/profiles")
+@_get("/workflow-vault/profiles")
 async def get_profiles(request):
     return _profiles_response()
 
@@ -877,7 +923,7 @@ async def _stream_zip_response(request, zip_path, filename):
             pass
 
 
-@routes.get("/workflow-vault/entries/{entry_id}/export")
+@_get("/workflow-vault/entries/{entry_id}/export")
 async def get_export_entry(request):
     vault_root, err = _require_vault()
     if err:
@@ -892,7 +938,7 @@ async def get_export_entry(request):
     return await _stream_zip_response(request, zip_path, f"{exporting.download_name(slug, 'entry')}.zip")
 
 
-@routes.get("/workflow-vault/footprint")
+@_get("/workflow-vault/footprint")
 async def get_footprint(request):
     vault_root, err = _require_vault()
     if err:
@@ -904,7 +950,7 @@ async def get_footprint(request):
     return web.json_response(data)
 
 
-@routes.get("/workflow-vault/health")
+@_get("/workflow-vault/health")
 async def get_health(request):
     vault_root, err = _require_vault()
     if err:
@@ -927,7 +973,7 @@ async def post_cleanup_staging(request):
     return web.json_response({"ok": not data["failed"], **data, "health": report})
 
 
-@routes.get("/workflow-vault/export")
+@_get("/workflow-vault/export")
 async def get_export_vault(request):
     vault_root, err = _require_vault()
     if err:
@@ -1186,7 +1232,7 @@ async def post_delete_version(request):
         return web.json_response(storage.build_entry_state(vault_root, slug))
 
 
-@routes.get("/workflow-vault/entries/{entry_id}/versions/{version_id}/workflow")
+@_get("/workflow-vault/entries/{entry_id}/versions/{version_id}/workflow")
 async def get_version_workflow(request):
     vault_root, err = _require_vault()
     if err:
@@ -1633,7 +1679,7 @@ async def post_shotgrid_sync(request):
 # Media
 # ---------------------------------------------------------------------------
 
-@routes.get("/workflow-vault/media")
+@_get("/workflow-vault/media")
 async def get_media(request):
     vault_root = config.get_vault_root()
     if not vault_root or not config.is_initialized(vault_root):
