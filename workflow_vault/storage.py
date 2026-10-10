@@ -15,7 +15,7 @@ import stat
 import threading
 import time
 
-from . import prefs, studio, utils
+from . import prefs, sharing, studio, utils
 
 
 def entries_dir(vault_root):
@@ -361,7 +361,7 @@ def _build_entry_state(vault_root, slug, key):
 def _user_favorites(vault_root):
     """Studio mode: the artist's own favorites (None outside studio mode,
     where the manifest's shared flag is used as upstream does)."""
-    return prefs.favorites(vault_root) if studio.enabled() else None
+    return prefs.favorites(vault_root) if studio.policy(vault_root) else None
 
 
 def _personalize(entry, favorites):
@@ -452,63 +452,6 @@ def build_state(vault_root):
         "entries": entries,
         "tags": sorted(tags),
     }
-
-
-MAX_PERMISSION_ISSUES = 25
-
-
-def scan_permissions(vault_root):
-    """Studio mode: find files and folders other artists can't fully use.
-
-    Returns (problem_count, samples) where samples are up to
-    MAX_PERMISSION_ISSUES {path, problem} dicts. Checks what a colleague needs:
-    group read/write on files, group rwx + setgid on folders, the studio group
-    (when one is configured), and that this artist can read everything.
-    The trash is skipped; it never needs to be shared-writable to work."""
-    cfg = studio.load()
-    if not cfg or os.name == "nt" or not os.path.isdir(vault_root):
-        return 0, []
-    count = 0
-    samples = []
-
-    def flag(path, problem):
-        nonlocal count
-        count += 1
-        if len(samples) < MAX_PERMISSION_ISSUES:
-            samples.append({"path": os.path.relpath(path, vault_root).replace("\\", "/"), "problem": problem})
-
-    def check(path, is_dir):
-        try:
-            st = os.lstat(path)
-        except OSError:
-            return
-        if stat.S_ISLNK(st.st_mode):
-            return
-        mode = stat.S_IMODE(st.st_mode)
-        problems = []
-        if not os.access(path, os.R_OK | (os.X_OK if is_dir else 0)):
-            problems.append("you can't read it")
-        if is_dir:
-            if mode & 0o070 != 0o070:
-                problems.append("folder isn't group read/write/enter (needs g+rwx)")
-            elif not mode & stat.S_ISGID:
-                problems.append("folder is missing the setgid bit (g+s), so new files may get the wrong group")
-        elif mode & 0o060 != 0o060:
-            problems.append("file isn't group read/write (needs g+rw)")
-        if cfg["gid"] is not None and st.st_gid != cfg["gid"]:
-            problems.append(f"group isn't {cfg['group']}")
-        if problems:
-            flag(path, "; ".join(problems))
-
-    check(vault_root, True)
-    for dirpath, dirnames, filenames in os.walk(vault_root):
-        if dirpath == vault_root:
-            dirnames[:] = [d for d in dirnames if d != studio.TRASH_DIRNAME]
-        for name in dirnames:
-            check(os.path.join(dirpath, name), True)
-        for name in filenames:
-            check(os.path.join(dirpath, name), False)
-    return count, samples
 
 
 def health_report(vault_root):
@@ -617,27 +560,46 @@ def health_report(vault_root):
                         "message": "Example references a media file that is missing or invalid.",
                     })
 
-    if studio.enabled():
-        perm_count, perm_samples = scan_permissions(vault_root)
-        summary["permission_problems"] = perm_count
-        for sample in perm_samples:
-            issues.append({
-                "severity": "error",
-                "type": "permissions",
-                "path": sample["path"],
-                "message": (
-                    f"Other artists may not be able to use this: {sample['problem']}. "
-                    "A pipeline admin can fix the whole vault with: python vault_admin.py fix-permissions"
-                ),
-            })
-        if perm_count > len(perm_samples):
-            issues.append({
-                "severity": "error",
-                "type": "permissions",
-                "message": f"…and {perm_count - len(perm_samples)} more files or folders with permission problems.",
-            })
+    pol = studio.policy(vault_root)
+    if pol:
+        _add_sharing_issues(vault_root, pol, summary, issues)
 
     return {"ok": not issues, "summary": summary, "issues": issues}
+
+
+def _add_sharing_issues(vault_root, pol, summary, issues):
+    """Shared vault: report what the rest of the team can't use, by owner.
+
+    Only a file's owner (or root) can open it up. Each artist's ComfyUI does
+    that for their own files when it opens the vault, so what's left belongs
+    to people who haven't opened it with this version yet."""
+    report = sharing.scan(vault_root, pol)
+    summary["permission_problems"] = report["problems"]
+    me = studio.current_user()
+    for owner, info in sorted(report["by_owner"].items()):
+        n = info["count"]
+        things = f"{n} file{'s' if n != 1 else ''} or folder{'s' if n != 1 else ''}"
+        if owner == me:
+            message = (f"{things} of yours aren't shared with the team yet. "
+                       "Use “Fix my files” below.")
+        else:
+            message = (f"{things} saved by {owner} aren't shared with the team yet. They're fixed "
+                       f"automatically the next time {owner} opens this vault with the studio edition "
+                       "(or an admin can run: sudo python vault_admin.py fix-permissions).")
+        issues.append({
+            "severity": "error",
+            "type": "permissions",
+            "owner": owner,
+            "path": ", ".join(info["samples"]) + (" …" if n > len(info["samples"]) else ""),
+            "message": message,
+        })
+    if report["unreadable"]:
+        issues.append({
+            "severity": "error",
+            "type": "permissions",
+            "path": ", ".join(report["unreadable"]),
+            "message": "You can't read some files in this vault, so workflows in them won't show up for you.",
+        })
 
 
 def cleanup_staging_entries(vault_root):

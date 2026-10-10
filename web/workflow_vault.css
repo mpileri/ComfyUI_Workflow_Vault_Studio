@@ -4930,3 +4930,13 @@
   font-size: 12px;
   align-self: center;
 }
+
+/* Team sharing (plug and play) */
+
+.wv-init-shared {
+  margin: 14px 0 4px;
+}
+
+.wv-sharing-actions {
+  justify-content: space-between;
+}

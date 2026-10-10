@@ -1,17 +1,18 @@
-"""Command-line tools for the pipeline team running a shared (studio) vault.
+"""Command-line tools for a shared vault. None of them is needed for the
+plug-and-play setup (artists share a vault from the UI); they're for
+inspecting, repairing, and scripting.
 
 Run from the extension folder (no ComfyUI needed):
 
-    python vault_admin.py status
-    python vault_admin.py init                 # create/initialize the studio vault
-    python vault_admin.py check-permissions
-    sudo python vault_admin.py fix-permissions # repair a vault made before studio mode
-    python vault_admin.py trash list
-    python vault_admin.py trash restore <id>
-    python vault_admin.py trash purge --older-than 30
-    python vault_admin.py shotgrid-sync         # pull projects/sequences/shots (cron-able)
+    python vault_admin.py status --vault /mnt/share/vault
+    python vault_admin.py init --shared --vault /mnt/share/vault   # create a shared team vault
+    python vault_admin.py check-permissions --vault ...
+    sudo python vault_admin.py fix-permissions --vault ...         # open up everyone's files at once
+    python vault_admin.py trash list|restore <id>|purge --older-than 30
+    python vault_admin.py shotgrid-sync                            # cron-able
 
-Every command takes --vault <id or path> (default: the studio's default vault).
+--vault takes a folder path, or a vault id from a managed studio config
+(default: that config's default vault).
 """
 
 import argparse
@@ -22,7 +23,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from . import config, locking, shotgrid, storage, studio, utils
+from . import config, locking, sharing, shotgrid, studio, utils
 
 
 def _fail(message):
@@ -31,40 +32,48 @@ def _fail(message):
 
 
 def _resolve_vault(arg):
-    """A studio vault id, a path, or (default) the studio's default vault."""
+    """A managed vault id, a path, or (default) the managed default vault.
+    Also makes it the active vault, so writes follow its sharing policy."""
     if arg:
         match = next((v for v in studio.vaults() if v["id"] == arg), None)
-        return match["vault_root"] if match else os.path.abspath(os.path.expanduser(arg))
-    vid = studio.default_vault_id()
-    if not vid:
-        _fail("no studio vault is configured; pass --vault <path>, or set one up in "
-              f"{studio.config_path()} (or WORKFLOW_VAULT_ROOT).")
-    return next(v for v in studio.vaults() if v["id"] == vid)["vault_root"]
+        root = match["vault_root"] if match else os.path.abspath(os.path.expanduser(arg))
+    else:
+        vid = studio.default_vault_id()
+        if not vid:
+            _fail("which vault? Pass --vault <folder>.")
+        root = next(v for v in studio.vaults() if v["id"] == vid)["vault_root"]
+    studio.set_active_vault(root)
+    return root
 
 
-def _modes(args):
-    cfg = studio.load() or {}
-    group = args.group or cfg.get("group")
-    gid = studio._resolve_gid(group) if group else None
-    if group and gid is None:
-        _fail(f"group {group!r} does not exist on this machine.")
-    return (
-        gid,
-        group,
-        cfg.get("file_mode", studio.DEFAULT_FILE_MODE),
-        cfg.get("dir_mode", studio.DEFAULT_DIR_MODE),
-    )
+def _policy(root, args):
+    """The sharing policy to apply: --group forces group mode, otherwise the
+    vault's own."""
+    group = getattr(args, "group", None)
+    if group:
+        if studio._resolve_gid(group) is None:
+            _fail(f"group {group!r} does not exist on this machine.")
+        return studio._make_policy({"permissions": "group", "group": group}, False, "command line")
+    pol = studio.policy(root)
+    if not pol:
+        _fail(f"{root} isn't a shared vault. Share it from the vault (Settings → Vaults → Team sharing), "
+              f"or run: python vault_admin.py init --shared --vault {root}")
+    return pol
 
 
-def _walk(root, include_trash=True):
+def _walk(root):
     yield root, True
     for dirpath, dirnames, filenames in os.walk(root):
-        if not include_trash and dirpath == root:
-            dirnames[:] = [d for d in dirnames if d != studio.TRASH_DIRNAME]
         for name in dirnames:
             yield os.path.join(dirpath, name), True
         for name in filenames:
             yield os.path.join(dirpath, name), False
+
+
+def _describe(pol):
+    if pol["mode"] == "group":
+        return f"restricted to group {pol['group']} (files {oct(pol['file_mode'])}, folders {oct(pol['dir_mode'])})"
+    return f"open to everyone who can reach the folder (files {oct(pol['file_mode'])}, folders {oct(pol['dir_mode'])})"
 
 
 # ---------------------------------------------------------------------------
@@ -72,77 +81,77 @@ def _walk(root, include_trash=True):
 # ---------------------------------------------------------------------------
 
 def cmd_status(args):
-    cfg = studio.load()
-    if not cfg:
-        print("Studio mode: OFF (no studio_config.json, $WORKFLOW_VAULT_STUDIO_CONFIG or $WORKFLOW_VAULT_ROOT)")
-        print(f"Looked for: {studio.config_path()}")
+    dep = studio.deployment()
+    print(f"You are: {studio.current_user()}")
+    if dep:
+        print(f"Managed studio config: {dep['path'] or '(from environment)'}")
+        if dep["error"]:
+            print(f"  CONFIG ERROR: {dep['error']}")
+        print(f"  personal vaults: {'allowed' if dep['allow_personal_vaults'] else 'off'}")
+        print(f"  per-user config: {studio.user_config_path()}")
+        for v in dep["vaults"]:
+            default = " (default)" if v["id"] == dep["default_vault"] else ""
+            print(f"  vault {v['id']}{default}: {v['name']}  {v['vault_root']}")
+    else:
+        print("Managed studio config: none (plug-and-play: vaults are shared from the UI)")
+    if not args.vault and not (dep and dep["default_vault"]):
+        print("\nPass --vault <folder> to inspect a vault.")
         return
-    print("Studio mode: ON")
-    print(f"  config file:      {cfg['path'] or '(none; from environment)'}")
-    if cfg["error"]:
-        print(f"  CONFIG ERROR:     {cfg['error']}")
-    print(f"  you are:          {studio.current_user()}{' (admin)' if studio.is_admin() else ''}")
-    print(f"  admins:           {', '.join(cfg['admins']) or '(none: everyone is an admin)'}")
-    print(f"  group:            {cfg['group'] or '(not set: files keep their folder group)'}"
-          f"{'  [MISSING on this machine]' if cfg['group'] and cfg['gid'] is None else ''}")
-    print(f"  file/dir modes:   {oct(cfg['file_mode'])} / {oct(cfg['dir_mode'])}")
-    print(f"  deletes go to:    {'<vault>/.trash' if cfg['trash'] == 'vault' else 'each artist’s OS trash'}")
-    print(f"  personal vaults:  {'allowed' if cfg['allow_personal_vaults'] else 'off'}")
-    print(f"  per-user config:  {studio.user_config_path()}")
-    print("  vaults:")
-    if not cfg["vaults"]:
-        print("    (none)")
-    for v in cfg["vaults"]:
-        root = v["vault_root"]
-        if not os.path.isdir(root):
-            state = "MISSING"
-        elif not config.is_initialized(root):
-            state = "not initialized (run: init)"
-        else:
-            state = "ok" + ("" if os.access(root, os.W_OK) else ", NOT writable by you")
-        default = " (default)" if v["id"] == cfg["default_vault"] else ""
-        print(f"    {v['id']}{default}: {v['name']}  {root}  [{state}]")
+    root = _resolve_vault(args.vault)
+    print(f"\nVault: {root}")
+    if not os.path.isdir(root):
+        print("  MISSING (not reachable from this machine)")
+        return
+    if not config.is_initialized(root):
+        print("  not initialized (run: init)")
+        return
+    print(f"  writable by you: {'yes' if os.access(root, os.W_OK) else 'NO'}")
+    pol = studio.policy(root)
+    if not pol:
+        print("  sharing: private (not shared with the team)")
+        return
+    print(f"  sharing: {'managed by the studio config' if pol['managed'] else 'shared team vault'}, {_describe(pol)}")
+    print(f"  admins: {', '.join(pol['admins']) or '(none: everyone is an admin)'}"
+          f"{'  — you are one' if studio.is_admin(vault_root=root) else ''}")
+    print(f"  deletes go to: {'<vault>/.trash' if pol['trash'] == 'vault' else 'each artist’s OS trash'}")
 
 
 def cmd_init(args):
     root = _resolve_vault(args.vault)
-    gid, group, file_mode, dir_mode = _modes(args)
     if os.path.isdir(root) and not config.is_empty(root) and not config.is_initialized(root) and not args.force:
         _fail(f"{root} is not empty and isn't a vault yet. Re-run with --force to create the vault files in it.")
     os.makedirs(root, exist_ok=True)
     config.initialize_vault(root)
-    problems = 0
-    for path, is_dir in _walk(root):
-        try:
-            if gid is not None:
-                os.chown(path, -1, gid)
-            os.chmod(path, dir_mode if is_dir else file_mode)
-        except OSError as e:
-            problems += 1
-            print(f"could not set permissions on {path}: {e}", file=sys.stderr)
-    print(f"Vault ready at {root}" + (f" (group {group})" if group else ""))
-    if problems:
-        print("Some paths are owned by other users; run fix-permissions with sudo.")
-    if not group:
-        print("note: no group configured. Every artist must share the folder's group for studio mode to work;"
-              " set \"group\" in the studio config, or pass --group.")
+    if args.shared or args.group:
+        if args.group and studio._resolve_gid(args.group) is None:
+            _fail(f"group {args.group!r} does not exist on this machine.")
+        pol, err = sharing.enable(root, "group" if args.group else "open", args.group, [])
+        if err:
+            _fail(err)
+    pol = studio.policy(root)
+    if pol:
+        sharing.heal(root, pol)
+        print(f"Shared vault ready at {root}: {_describe(pol)}.")
+        print("Artists join it by choosing this folder in the vault.")
+    else:
+        print(f"Private vault ready at {root}. Add --shared to share it with the team.")
 
 
 def cmd_check_permissions(args):
     root = _resolve_vault(args.vault)
     if not os.path.isdir(root):
         _fail(f"{root} does not exist.")
-    if not studio.enabled():
-        _fail("studio mode is off, so there is no shared permission policy to check against.")
-    count, samples = storage.scan_permissions(root)
-    if not count:
-        print(f"OK: everything under {root} is shared correctly.")
+    pol = _policy(root, args)
+    report = sharing.scan(root, pol)
+    if not report["problems"] and not report["unreadable"]:
+        print(f"OK: everything under {root} is shared ({_describe(pol)}).")
         return
-    for s in samples:
-        print(f"{s['path']}: {s['problem']}")
-    if count > len(samples):
-        print(f"...and {count - len(samples)} more.")
-    print(f"\n{count} problem(s). Fix them with: sudo python vault_admin.py fix-permissions")
+    for owner, info in sorted(report["by_owner"].items()):
+        print(f"{info['count']} path(s) owned by {owner} aren't shared, e.g. {', '.join(info['samples'])}")
+    if report["unreadable"]:
+        print(f"You can't read: {', '.join(report['unreadable'])}")
+    print("\nEach artist's files are fixed automatically when they open the vault; "
+          "to fix everyone's at once: sudo python vault_admin.py fix-permissions")
     sys.exit(2)
 
 
@@ -150,9 +159,8 @@ def cmd_fix_permissions(args):
     root = _resolve_vault(args.vault)
     if not os.path.isdir(root):
         _fail(f"{root} does not exist.")
-    gid, group, file_mode, dir_mode = _modes(args)
-    if gid is None:
-        print("warning: no group configured; only permission bits will be fixed, not group ownership.")
+    pol = _policy(root, args)
+    gid, file_mode, dir_mode = pol["gid"], pol["file_mode"], pol["dir_mode"]
     changed = failed = 0
     for path, is_dir in _walk(root):
         try:
@@ -170,7 +178,7 @@ def cmd_fix_permissions(args):
         if args.dry_run:
             what = []
             if need_group:
-                what.append(f"group -> {group}")
+                what.append(f"group -> {pol['group']}")
             if need_mode:
                 what.append(f"mode {oct(stat.S_IMODE(st.st_mode))} -> {oct(want)}")
             print(f"would fix {rel}: {', '.join(what)}")
@@ -187,7 +195,8 @@ def cmd_fix_permissions(args):
     verb = "would fix" if args.dry_run else "fixed"
     print(f"{verb} {changed} path(s){f', {failed} failed' if failed else ''}.")
     if failed:
-        print("Files owned by other users can only be changed by their owner or root: re-run with sudo.")
+        print("Files owned by other users can only be changed by their owner or root: re-run with sudo "
+              "(or let each artist open the vault, which fixes their own files).")
         sys.exit(2)
 
 
@@ -308,12 +317,14 @@ def main(argv=None):
         return p
 
     add("status", cmd_status, "show the studio configuration and the state of each vault")
-    p = add("init", cmd_init, "create and initialize a vault folder with shared permissions")
-    p.add_argument("--group", help="Unix group to own the vault (default: from the studio config)")
+    p = add("init", cmd_init, "create and initialize a vault folder")
+    p.add_argument("--shared", action="store_true", help="share it with the team (open to everyone who can reach the folder)")
+    p.add_argument("--group", help="share it, restricted to this Unix group instead")
     p.add_argument("--force", action="store_true", help="initialize inside a non-empty folder")
-    add("check-permissions", cmd_check_permissions, "list files and folders other artists can't fully use")
-    p = add("fix-permissions", cmd_fix_permissions, "give the whole vault the studio's group and permissions")
-    p.add_argument("--group", help="Unix group to own the vault (default: from the studio config)")
+    p = add("check-permissions", cmd_check_permissions, "list files and folders other artists can't fully use")
+    p.add_argument("--group", help="check against group mode with this Unix group")
+    p = add("fix-permissions", cmd_fix_permissions, "give the whole vault its shared permissions (run as root to fix everyone's files)")
+    p.add_argument("--group", help="use group mode with this Unix group (default: the vault's own sharing)")
     p.add_argument("--dry-run", action="store_true", help="only show what would change")
 
     add("shotgrid-sync", cmd_shotgrid_sync, "pull projects, sequences and shots from ShotGrid")

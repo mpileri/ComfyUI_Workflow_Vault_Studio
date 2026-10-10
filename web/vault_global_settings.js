@@ -839,7 +839,28 @@ function renderHealthPanel(controller) {
     el("div", {}, ["Inspect and recover"]),
     el("div", { className: "wv-radio-desc" }, ["Use cleanup only for .wv_staging_* folders left by interrupted saves."]),
   ]));
-  actions.appendChild(el("div", { className: "wv-vs-batch-action" }, [status, checkBtn, cleanupBtn]));
+  // Shared vault: only a file's owner can open it up for the team, so each
+  // artist fixes their own (also done automatically when the vault opens).
+  const healBtn = el("button", { className: "wv-btn", type: "button", title: "Make the files you saved readable and changeable by the team" }, [
+    el("i", { className: "pi pi-users" }),
+    " Fix my files",
+  ]);
+  healBtn.onclick = async () => {
+    healBtn.disabled = true;
+    status.textContent = "Fixing…";
+    try {
+      const res = await VaultAPI.healSharing();
+      renderReport(res.health);
+      showToast(res.fixed ? `Shared ${res.fixed} of your file${res.fixed === 1 ? "" : "s"} with the team.` : "Your files were already shared.", "success");
+    } catch (e) {
+      status.textContent = e.message;
+    } finally {
+      healBtn.disabled = false;
+    }
+  };
+  const healthButtons = [status, checkBtn, cleanupBtn];
+  if (controller.state.studio?.enabled) healthButtons.splice(2, 0, healBtn);
+  actions.appendChild(el("div", { className: "wv-vs-batch-action" }, healthButtons));
   healthPanel.appendChild(summary);
   healthPanel.appendChild(issueList);
   healthPanel.appendChild(actions);

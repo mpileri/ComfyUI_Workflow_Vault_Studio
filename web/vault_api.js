@@ -91,6 +91,10 @@ export const VaultAPI = {
   compressExamples: () => postJSON("/workflow-vault/compress-examples", {}),
   initialize: (vaultRoot) => postJSON("/workflow-vault/initialize", { vault_root: vaultRoot }),
 
+  // Team sharing for the active vault: {enabled, permissions, group, admins}.
+  setSharing: (body) => postJSON("/workflow-vault/sharing", body),
+  healSharing: () => postJSON("/workflow-vault/sharing/heal", {}),
+
   getProfiles: () => getJSON("/workflow-vault/profiles"),
   createProfile: (body) => postJSON("/workflow-vault/profiles", body),
   activateProfile: (profileId) =>

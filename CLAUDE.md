@@ -8,13 +8,15 @@ The **studio (multi-user) edition** of ComfyUI Workflow Vault, a fork of
 [avillabon/ComfyUI_Workflow_Vault](https://github.com/avillabon/ComfyUI_Workflow_Vault)
 (GPL-3.0). It adds two things on top of the original:
 
-- **Studio mode:** one shared vault on network storage. Every artist runs
-  their own ComfyUI as their own OS user. See [STUDIO.md](STUDIO.md).
+- **Shared team vaults:** one vault in a network folder. Every artist runs
+  their own ComfyUI as their own OS user. It's plug and play: the folder's
+  `shared_vault.json` makes it shared, and an optional managed studio config
+  can define vaults centrally. See [STUDIO.md](STUDIO.md).
 - **Projects:** a project → sequence → shot hierarchy, each place holding its
   own copies of workflows, with an optional ShotGrid sync. See the README.
 
-Without a studio config, the extension must behave exactly like the original
-single-user vault.
+A vault that isn't shared must behave exactly like the original single-user
+vault.
 
 ## Rules
 
@@ -39,7 +41,8 @@ single-user vault.
 | Path | Contents |
 |---|---|
 | `workflow_vault/api.py` | HTTP routes (aiohttp, registered on ComfyUI's server) |
-| `workflow_vault/studio.py` | Studio config, current user, admins |
+| `workflow_vault/studio.py` | Sharing policy per vault (`policy(vault_root)`), managed config, current user, admins |
+| `workflow_vault/sharing.py` | Share/unshare a vault, self-heal the current user's files, permission scan |
 | `workflow_vault/utils.py` | Atomic writes, shared permissions, trash |
 | `workflow_vault/locking.py` | Cross-process vault lock (`.wv_lock`) |
 | `workflow_vault/prefs.py` | Per-artist favorites and view settings |
@@ -62,8 +65,13 @@ single-user vault.
 - Delete with `utils.send_to_trash(path, vault_root)`, so studio vaults use
   the shared `.trash`.
 - Record authorship with `utils.stamp_created()` / `utils.touch()`.
-- In studio mode, per-artist state goes through `prefs.py`, never the shared
-  manifest.
+- Sharing is per vault: use `studio.policy(vault_root)` when you know the
+  vault. `studio.load()` / `studio.enabled()` mean the *active* vault, which
+  is what file writes without a vault argument follow.
+- In a shared vault, per-artist state goes through `prefs.py`, never the
+  shared manifest.
+- Plug and play is a hard requirement: never add a step that needs IT
+  (groups, user changes, root) for the default setup.
 - Frontend: build DOM with `el()` from `vault_dom.js`, and reuse the existing
   CSS tokens and classes in `workflow_vault.css`.
 

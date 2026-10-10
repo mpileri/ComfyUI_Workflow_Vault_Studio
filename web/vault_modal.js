@@ -166,6 +166,15 @@ export function renderInitView(controller) {
     [el("i", { className: "pi pi-folder-open" }), " Browse…"]
   );
   wrap.appendChild(el("div", { className: "wv-init-path-row" }, [input, browseBtn]));
+  // Plug-and-play team sharing: the folder itself remembers it's shared, so
+  // other artists just pick the same folder (and join automatically).
+  const sharedSwitch = toggleField("Shared team vault — the folder is on a network drive and other artists will use it too", false, () => {});
+  wrap.appendChild(el("div", { className: "wv-init-shared" }, [sharedSwitch]));
+  wrap.appendChild(
+    el("p", { className: "wv-init-hint" }, [
+      "Joining your team's vault? Just choose its folder: if it's already shared, you join it automatically.",
+    ])
+  );
 
   const status = el("div", { className: "wv-init-status" });
   wrap.appendChild(status);
@@ -216,10 +225,10 @@ export function renderInitView(controller) {
     initBtn.disabled = true;
     status.textContent = "";
     try {
-      const result = await VaultAPI.postSettings({ vault_root: trimmed, confirm });
+      const result = await VaultAPI.postSettings({ vault_root: trimmed, confirm, shared: sharedSwitch.input.checked });
       controller.state = { ...controller.state, ...result, initialized: true };
       await controller.refresh();
-      showToast("Vault ready.", "success");
+      showToast(controller.state.studio?.enabled ? "Shared team vault ready." : "Vault ready.", "success");
     } catch (e) {
       if (e.status === 409 && e.data?.needs_confirmation) {
         initBtn.disabled = false;

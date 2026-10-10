@@ -32,8 +32,8 @@ _UMASK = _read_umask()
 # tempfile.mkstemp (behind every atomic write) creates files 0600 whatever the
 # umask, and that alone made a vault on a shared folder unusable: whoever saved
 # an entry was the only person who could read it. New files now get normal
-# permissions (0666 minus the umask), and in studio mode the studio's group and
-# group-writable modes, so every artist can read, version, and delete them.
+# permissions (0666 minus the umask), and in a shared vault the vault's sharing
+# modes (see studio.policy), so every artist can read, version, and delete them.
 
 def new_file_mode(shared=True):
     cfg = studio.load() if shared else None
@@ -45,25 +45,29 @@ def _studio_gid(shared):
     return cfg["gid"] if cfg else None
 
 
-def share_path(path):
-    """Give a file or folder the studio's group and permissions. A no-op
-    outside studio mode, on Windows, and for paths owned by someone else (only
-    the owner, or root, may change them). Never raises."""
-    cfg = studio.load()
+def share_path(path, pol=None):
+    """Give a file or folder the shared vault's permissions (and group, in
+    group mode). `pol` defaults to the active vault's policy. A no-op for a
+    private vault, on Windows, and for paths owned by someone else (only the
+    owner, or root, may change them). Returns True if anything changed.
+    Never raises."""
+    cfg = pol or studio.load()
     if not cfg or os.name == "nt":
-        return
+        return False
     try:
         st = os.lstat(path)
     except OSError:
-        return
+        return False
     if stat.S_ISLNK(st.st_mode):
-        return
+        return False
     euid = os.geteuid()
     if euid != 0 and st.st_uid != euid:
-        return
+        return False
+    changed = False
     if cfg["gid"] is not None and st.st_gid != cfg["gid"]:
         try:
             os.chown(path, -1, cfg["gid"])
+            changed = True
         except OSError:
             pass
     want = cfg["dir_mode"] if stat.S_ISDIR(st.st_mode) else cfg["file_mode"]
@@ -71,8 +75,10 @@ def share_path(path):
         # chown may have cleared setgid, so re-read rather than trust st_mode.
         if stat.S_IMODE(os.lstat(path).st_mode) != want:
             os.chmod(path, want)
+            changed = True
     except OSError:
         pass
+    return changed
 
 
 def share_tree(root):
@@ -332,14 +338,14 @@ def _set_windows_creation_time(path, ctime):
         pass
 
 
-def _uses_vault_trash():
-    cfg = studio.load()
+def _uses_vault_trash(vault_root=None):
+    cfg = studio.policy(vault_root) if vault_root else studio.load()
     return bool(cfg and cfg["trash"] == "vault")
 
 
-def trash_label():
+def trash_label(vault_root=None):
     """The user-facing name of where deletes go, for UI copy."""
-    if _uses_vault_trash():
+    if _uses_vault_trash(vault_root):
         return studio.trash_label()
     if sys.platform.startswith("win"):
         return "Recycle Bin"
@@ -397,7 +403,7 @@ def send_to_trash(path, vault_root=None):
     if not os.path.exists(path):
         raise OSError("Path not found.")
 
-    if vault_root and _uses_vault_trash() and is_path_inside(vault_root, path):
+    if vault_root and _uses_vault_trash(vault_root) and is_path_inside(vault_root, path):
         _move_to_vault_trash(vault_root, path)
         return "vault_trash"
 

@@ -2,12 +2,14 @@
 
 > **This is a multi-user fork** of
 > [avillabon/ComfyUI_Workflow_Vault](https://github.com/avillabon/ComfyUI_Workflow_Vault)
-> that adds a **studio mode**: one shared vault on network storage for every
-> artist in a studio, each running their own ComfyUI as their own user. It
-> fixes the owner-only file permissions that made a shared vault unusable, and
-> adds cross-machine locking, a shared trash, per-artist favorites, authorship,
-> and admin roles. **Setup guide: [STUDIO.md](STUDIO.md).** Without a studio
-> config it behaves exactly like the original, documented below.
+> that adds **shared team vaults**: one vault in a network folder for a whole
+> team, each artist running their own ComfyUI as their own user. It's plug and
+> play: one artist ticks **Shared team vault** when choosing the folder, and
+> everyone else just picks the same folder. No IT setup, groups or config files
+> are needed. It fixes the owner-only file permissions that made a shared vault
+> unusable, and adds cross-machine locking, a shared trash, per-artist
+> favorites, authorship, and optional admins. **Guide: [STUDIO.md](STUDIO.md).**
+> Vaults that aren't shared behave exactly like the original, documented below.
 >
 > It also adds **Projects** (see [below](#projects-studio-edition)): save
 > workflows into a project, a sequence, or a shot, each with its own copies.
@@ -35,7 +37,7 @@ Next to the studio-wide **Library**, workflows can live in a
   **+ Sequence** / **+ Shots** (paste a list of shot codes) inside it; rename,
   archive or delete from the **⋯** next to the breadcrumb. A project, sequence
   or shot can only be deleted when no workflow is saved in it — archive it
-  instead. With studio admins configured, only admins change the structure.
+  instead. In a shared vault with admins listed, only admins change the structure.
 - **ShotGrid:** projects, sequences and shots can be synced from ShotGrid,
   from the sidebar (sync icon) or `python vault_admin.py shotgrid-sync`
   (cron-friendly). See [STUDIO.md](STUDIO.md#shotgrid-sync).

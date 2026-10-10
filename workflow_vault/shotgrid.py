@@ -30,7 +30,7 @@ OMITTED_STATUSES = {"omt"}
 
 
 def settings():
-    cfg = (studio.load() or {}).get("shotgrid") or {}
+    cfg = (studio.deployment() or {}).get("shotgrid") or {}
     key = os.environ.get("SHOTGRID_SCRIPT_KEY") or ""
     key_file = cfg.get("script_key_file")
     if not key and key_file:

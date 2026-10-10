@@ -10,8 +10,8 @@ from urllib.parse import urlsplit
 from aiohttp import web
 from server import PromptServer
 
-from . import (config, entries, examples, exporting, folders, locking, media, prefs, projects, shotgrid,
-               storage, studio, utils, versions, video)
+from . import (config, entries, examples, exporting, folders, locking, media, prefs, projects, sharing,
+               shotgrid, storage, studio, utils, versions, video)
 
 routes = PromptServer.instance.routes
 
@@ -191,19 +191,17 @@ def _write_lock(vault_root):
 
 
 def _require_admin(action):
-    """Studio mode with admins configured: vault-wide operations are theirs.
+    """Shared vault with admins listed: vault-wide operations are theirs.
     Returns an error response, or None when allowed."""
     if studio.is_admin():
         return None
-    admins = ", ".join(studio.load()["admins"])
-    return _error(f"Only vault admins can {action} ({admins}).", 403)
+    return _error(f"Only vault admins can {action} ({', '.join(studio.admins())}).", 403)
 
 
 def _require_can_delete(what, *records):
     if studio.can_delete(*records):
         return None
-    admins = ", ".join(studio.load()["admins"])
-    return _error(f"You can only delete {what} you created. Ask a vault admin ({admins}).", 403)
+    return _error(f"You can only delete {what} you created. Ask a vault admin ({', '.join(studio.admins())}).", 403)
 
 
 class _MultipartError(Exception):
@@ -313,9 +311,19 @@ def _full_state(vault_root):
     state["shotgrid"] = {"available": sg_ok, "reason": sg_reason}
     state["settings"] = config.load_vault_settings(vault_root)
     state["pillow_available"] = media.pillow_available()
-    state["trash_label"] = utils.trash_label()
+    state["trash_label"] = utils.trash_label(vault_root)
     state.update(_profile_fields())
     return state
+
+
+def _share_if_requested(vault_root, body):
+    """The UI asked for a new or chosen folder to be a shared team vault
+    ("shared": true). A folder that's already shared stays as it is.
+    Returns an error response or None."""
+    if not body.get("shared") or studio.policy(vault_root):
+        return None
+    _pol, err = sharing.enable(vault_root, body.get("permissions") or "open", body.get("group"), body.get("admins"))
+    return _error(err) if err else None
 
 
 def _prepare_vault_root(new_root, confirm):
@@ -353,10 +361,10 @@ def _prepare_vault_root(new_root, confirm):
 # ---------------------------------------------------------------------------
 
 async def _studio_vault_problem():
-    """Studio mode, active vault set by the studio: initialize it the first
-    time anyone opens it, or explain why it can't be used. Returns a message
-    for the UI, or None when the vault is ready."""
-    cfg = studio.load()
+    """Managed studio config, active vault set by the studio: initialize it the
+    first time anyone opens it, or explain why it can't be used. Returns a
+    message for the UI, or None when the vault is ready."""
+    cfg = studio.deployment()
     if cfg and cfg["error"]:
         return cfg["error"]
     profile = config.active_profile()
@@ -384,7 +392,7 @@ async def _studio_vault_problem():
 
 @routes.get("/workflow-vault/state")
 async def get_state(request):
-    studio_error = await _studio_vault_problem() if studio.enabled() else None
+    studio_error = await _studio_vault_problem() if studio.deployment() else None
     vault_root = config.get_vault_root()
     if studio_error or not vault_root or not config.is_initialized(vault_root):
         return web.json_response({
@@ -398,6 +406,9 @@ async def get_state(request):
             "studio_error": studio_error,
             **_profile_fields(),
         })
+    # Shared vault: open up this artist's own files for the team (once per
+    # process, in the background) — also migrates single-user vaults.
+    sharing.heal_in_background(vault_root)
     return web.json_response(_full_state(vault_root))
 
 
@@ -443,6 +454,9 @@ def _apply_settings(body):
         if problem:
             return _error(problem, 403)
         vault_root = new_root
+        err_response = _share_if_requested(vault_root, body)
+        if err_response:
+            return err_response
 
     if vault_root is None:
         vault_root = config.get_vault_root()
@@ -525,6 +539,9 @@ async def post_initialize(request):
     async with _write_lock(vault_root):
         config.initialize_vault(vault_root)
         config.set_vault_root(vault_root)
+        err_response = _share_if_requested(vault_root, body)
+        if err_response:
+            return err_response
         return web.json_response({
             "vault_root": vault_root,
             "initialized": True,
@@ -566,6 +583,9 @@ async def post_create_profile(request):
         if problem:
             return _error(problem)
         err_response = _prepare_vault_root(vault_root, body.get("confirm"))
+        if err_response:
+            return err_response
+        err_response = _share_if_requested(vault_root, body)
         if err_response:
             return err_response
         profile = config.create_profile(name, vault_root, activate=body.get("activate", True) is not False)
@@ -635,7 +655,7 @@ async def post_create_entry(request):
         example["output_files"] = _collect_indexed_files(files, f"example_{i}_output_", example.get("output_labels"))
 
     # Studio mode: a favorite is the saving artist's own, not the entry's.
-    favorite = bool(data.pop("favorite", False)) if studio.enabled() else None
+    favorite = bool(data.pop("favorite", False)) if studio.policy(vault_root) else None
     context_raw = data.pop("context", None)
 
     async with _write_lock(vault_root):
@@ -676,7 +696,7 @@ async def post_entry_metadata(request):
             if err:
                 return err
             move = {"context": context, "codes": codes}
-        if studio.enabled() and "favorite" in data:
+        if studio.policy(vault_root) and "favorite" in data:
             prefs.set_favorite(vault_root, entry_id, bool(data.pop("favorite")))
             # Starring alone touches nothing shared (and must not bump
             # "last updated" for everyone else).
@@ -1426,6 +1446,52 @@ async def post_convert_folders_to_tags(request):
     async with _write_lock(vault_root):
         result = await asyncio.to_thread(entries.convert_folders_to_tags, vault_root, allowed)
         return web.json_response({"ok": True, **result, **_full_state(vault_root)})
+
+
+# ---------------------------------------------------------------------------
+# Team sharing (plug and play)
+# ---------------------------------------------------------------------------
+
+@_post("/workflow-vault/sharing")
+async def post_sharing(request):
+    """Share the active vault with the team, change how, or make it private
+    again ({"enabled": false}). Anyone can share a private vault; once it's
+    shared with admins listed, only they can change its sharing."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    pol = studio.policy(vault_root)
+    if pol and pol["managed"]:
+        return _error("This vault's sharing is set by the studio configuration, not here.", 403)
+    if pol:
+        err = _require_admin("change how this vault is shared")
+        if err:
+            return err
+    async with _write_lock(vault_root):
+        if body.get("enabled") is False:
+            sharing.disable(vault_root)
+        else:
+            _pol, err_msg = await asyncio.to_thread(
+                sharing.enable, vault_root, body.get("permissions") or "open", body.get("group"), body.get("admins"))
+            if err_msg:
+                return _error(err_msg)
+        return web.json_response(_full_state(vault_root))
+
+
+@_post("/workflow-vault/sharing/heal")
+async def post_sharing_heal(request):
+    """Open up this artist's own files in the shared vault right now."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    if not studio.policy(vault_root):
+        return _error("This vault isn't shared.")
+    result = await asyncio.to_thread(sharing.heal, vault_root)
+    report = await asyncio.to_thread(storage.health_report, vault_root)
+    return web.json_response({**result, "health": report})
 
 
 # ---------------------------------------------------------------------------

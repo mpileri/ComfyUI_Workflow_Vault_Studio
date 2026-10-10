@@ -62,7 +62,7 @@ VALID_COMPRESS_FORMATS = ("webp", "jpeg")
 
 
 def extension_config_path():
-    return studio.user_config_path() if studio.enabled() else EXTENSION_CONFIG_PATH
+    return studio.user_config_path() if studio.deployment() else EXTENSION_CONFIG_PATH
 
 
 def load_extension_config():
@@ -74,14 +74,15 @@ def save_extension_config(cfg):
 
 
 def get_vault_root():
-    if studio.enabled():
+    if studio.deployment():
         profile = active_profile()
         root = profile["vault_root"] if profile else None
     else:
         root = load_extension_config().get("vault_root")
-    if root and os.path.isdir(root):
-        return root
-    return None
+    root = root if root and os.path.isdir(root) else None
+    # Writes that don't name a vault follow the active vault's sharing policy.
+    studio.set_active_vault(root)
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ def _resolve_profiles(cfg):
     ``vault_root`` is the source of truth for which vault is active: if the
     stored active profile disagrees with it (an older version re-pointed the
     root), the profile that owns that root wins, or one is created for it."""
-    if studio.enabled():
+    if studio.deployment():
         return _resolve_studio_profiles(cfg)
     profiles = []
     seen_ids = set()
@@ -395,7 +396,7 @@ def _shared_settings(vault_root):
 
 def load_vault_settings(vault_root):
     settings = _shared_settings(vault_root)
-    if studio.enabled():
+    if studio.policy(vault_root):
         settings = {**settings, **prefs.personal_settings(vault_root)}
     merged = dict(DEFAULT_VAULT_SETTINGS)
     merged.update(settings or {})
@@ -417,8 +418,8 @@ def load_vault_settings(vault_root):
 
 def shared_setting_changes(vault_root, updates):
     """The subset of `updates` that would change vault-wide (not personal)
-    settings. Studio admins gate these."""
-    if not studio.enabled():
+    settings. Shared-vault admins gate these."""
+    if not studio.policy(vault_root):
         return dict(updates)
     current = load_vault_settings(vault_root)
     return {
@@ -428,7 +429,7 @@ def shared_setting_changes(vault_root, updates):
 
 
 def save_vault_settings(vault_root, updates):
-    if not studio.enabled():
+    if not studio.policy(vault_root):
         current = load_vault_settings(vault_root)
         current.update(updates)
         utils.atomic_write_json(os.path.join(vault_root, "vault_settings.json"), current)
