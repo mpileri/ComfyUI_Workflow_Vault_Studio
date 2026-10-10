@@ -4,6 +4,10 @@
 // The UI says "vault"; the code, API routes, and vault_config.json keep the
 // original "profile" naming so existing installs need no migration.
 // This module owns the sidebar switcher and the Settings → Vaults tab.
+//
+// In studio mode some vaults come from the studio configuration ("locked"):
+// shared by every artist, they can be switched to but not renamed, repointed,
+// or removed from here.
 
 import { el, showToast, confirmDialog, promptDialog } from "./vault_dom.js";
 import { VaultAPI } from "./vault_api.js";
@@ -61,16 +65,38 @@ function panel(title, icon, hint) {
   return p;
 }
 
+function renderStudioPanel(studio) {
+  const p = panel("Studio mode", "pi pi-building", null);
+  const role = studio.is_admin ? "vault admin" : "artist";
+  const lines = [
+    `You're working as ${studio.user} (${role}). Everything you save is shared with the whole studio, and saves are recorded with your name.`,
+    "Favorites and view settings (card size, sort, card fields) are personal: they're stored for you alone.",
+    studio.trash === "vault"
+      ? "Deleted entries, versions and examples go to the vault's shared trash, where a pipeline admin can restore them."
+      : "Deleted entries, versions and examples go to your computer's trash.",
+  ];
+  if ((studio.admins || []).length && !studio.is_admin) {
+    lines.push(`Vault-wide changes (tags, compression, accent color) and deleting other people's work are reserved for: ${studio.admins.join(", ")}.`);
+  }
+  for (const line of lines) p.appendChild(el("p", { className: "wv-radio-desc wv-studio-line" }, [line]));
+  return p;
+}
+
 export function renderProfilesSection(controller, { activePanels = [] } = {}) {
   const { state } = controller;
   const profiles = state.profiles || [];
+  const studio = state.studio?.enabled ? state.studio : null;
   const section = el("div", { className: "wv-profiles" });
+
+  if (studio) section.appendChild(renderStudioPanel(studio));
 
   // --- Existing profiles ---
   const listPanel = panel(
-    "Your vaults",
+    studio ? "Vaults" : "Your vaults",
     "pi pi-users",
-    "Each vault is its own folder with separate entries, tags, and settings — for example one for work and one for personal projects. These changes apply immediately."
+    studio
+      ? "Studio vaults are shared with everyone and managed by your pipeline team. Switching only changes which one you're looking at."
+      : "Each vault is its own folder with separate entries, tags, and settings — for example one for work and one for personal projects. These changes apply immediately."
   );
   const list = el("div", { className: "wv-profile-list" });
   for (const p of profiles) {
@@ -78,7 +104,11 @@ export function renderProfilesSection(controller, { activePanels = [] } = {}) {
     const row = el("div", { className: `wv-profile-row${isActive ? " wv-profile-row-active" : ""}` });
     row.appendChild(
       el("div", { className: "wv-profile-info" }, [
-        el("div", { className: "wv-profile-name" }, [p.name, ...(isActive ? [el("span", { className: "wv-profile-badge" }, ["Active"])] : [])]),
+        el("div", { className: "wv-profile-name" }, [
+          p.name,
+          ...(p.locked ? [el("span", { className: "wv-profile-badge wv-profile-badge-studio", title: "Shared studio vault, set in the studio configuration" }, ["Studio"])] : []),
+          ...(isActive ? [el("span", { className: "wv-profile-badge" }, ["Active"])] : []),
+        ]),
         el("div", { className: "wv-profile-path wv-mono", title: p.vault_root }, [p.vault_root]),
       ])
     );
@@ -86,6 +116,9 @@ export function renderProfilesSection(controller, { activePanels = [] } = {}) {
     if (!isActive) {
       actions.appendChild(el("button", { className: "wv-btn", onclick: () => controller.switchProfile(p.id) }, ["Switch to"]));
     }
+    row.appendChild(actions);
+    list.appendChild(row);
+    if (p.locked) continue;
     actions.appendChild(
       el(
         "button",
@@ -111,8 +144,6 @@ export function renderProfilesSection(controller, { activePanels = [] } = {}) {
         [el("i", { className: "pi pi-trash" })]
       )
     );
-    row.appendChild(actions);
-    list.appendChild(row);
   }
   listPanel.appendChild(list);
   section.appendChild(listPanel);
@@ -120,6 +151,8 @@ export function renderProfilesSection(controller, { activePanels = [] } = {}) {
   // Per-profile settings (folder, accent color) sit right under the list they
   // describe; the settings view builds them because they share its Save flow.
   for (const p of activePanels) section.appendChild(p);
+
+  if (studio && !studio.allow_personal_vaults) return section;
 
   // --- Add a profile ---
   const addPanel = panel(

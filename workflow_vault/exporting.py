@@ -5,7 +5,10 @@ import re
 import tempfile
 import zipfile
 
-from . import storage
+from . import storage, studio
+
+# Never exported: the shared trash (deleted data) and the lock file.
+_SKIP_TOP_LEVEL = {studio.TRASH_DIRNAME, studio.LOCK_FILENAME}
 
 
 def download_name(name, fallback):
@@ -22,6 +25,9 @@ def build_zip_file(source_root, arc_root, skip_staging=False):
             for root, dirs, files in os.walk(source_root):
                 if skip_staging:
                     dirs[:] = [d for d in dirs if not d.startswith(storage.staging_entry_prefix())]
+                    if root == source_root:
+                        dirs[:] = [d for d in dirs if d not in _SKIP_TOP_LEVEL]
+                        files = [f for f in files if f not in _SKIP_TOP_LEVEL]
                 for name in files:
                     abs_path = os.path.join(root, name)
                     rel = os.path.relpath(abs_path, source_root)

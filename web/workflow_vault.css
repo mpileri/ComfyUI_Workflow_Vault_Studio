@@ -4695,3 +4695,28 @@
     max-width: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Studio mode (shared, multi-user vaults)
+   --------------------------------------------------------------------------- */
+
+.wv-profile-badge-studio {
+  color: var(--wv-accent);
+  background: var(--wv-accent-soft);
+}
+
+.wv-studio-line {
+  margin: 0 0 6px;
+}
+
+.wv-vs-panel-locked .wv-vs-row,
+.wv-vs-panel-locked .wv-vs-format,
+.wv-vs-panel-locked .wv-accent-controls,
+.wv-vs-panel-locked .wv-tag-manager,
+.wv-vs-panel-locked .wv-vs-batch-row {
+  opacity: 0.55;
+}
+
+.wv-vs-locked-hint {
+  margin: 10px 0 0;
+}

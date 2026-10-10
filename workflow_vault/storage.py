@@ -15,7 +15,7 @@ import stat
 import threading
 import time
 
-from . import utils
+from . import prefs, studio, utils
 
 
 def entries_dir(vault_root):
@@ -327,7 +327,9 @@ def _read_entry_state(vault_root, slug):
         "folder_id": manifest.get("folder_id"),
         "current_version_id": manifest.get("current_version_id"),
         "created_at": manifest.get("created_at"),
+        "created_by": manifest.get("created_by"),
         "updated_at": manifest.get("updated_at"),
+        "updated_by": manifest.get("updated_by"),
         "versions": list_versions(vault_root, slug),
         "examples": list_examples(vault_root, slug),
         "notes": read_notes(vault_root, slug),
@@ -355,8 +357,21 @@ def _build_entry_state(vault_root, slug, key):
     return state
 
 
+def _user_favorites(vault_root):
+    """Studio mode: the artist's own favorites (None outside studio mode,
+    where the manifest's shared flag is used as upstream does)."""
+    return prefs.favorites(vault_root) if studio.enabled() else None
+
+
+def _personalize(entry, favorites):
+    if entry is not None and favorites is not None:
+        entry["favorite"] = entry.get("id") in favorites
+    return entry
+
+
 def build_entry_state(vault_root, slug):
-    return _build_entry_state(vault_root, slug, _root_key(vault_root))
+    state = _build_entry_state(vault_root, slug, _root_key(vault_root))
+    return _personalize(state, _user_favorites(vault_root))
 
 
 def compute_footprint(vault_root):
@@ -416,10 +431,11 @@ def build_state(vault_root):
     # Manifest-less folders are skipped by _build_entry_state, so the extra
     # isfile per entry that list_entry_slugs does would be a wasted stat.
     slugs = _entry_folder_names(vault_root)
+    favorites = _user_favorites(vault_root)
     entries = []
     tags = set()
     for slug in slugs:
-        entry = _build_entry_state(vault_root, slug, key)
+        entry = _personalize(_build_entry_state(vault_root, slug, key), favorites)
         if entry:
             entries.append(entry)
             tags.update(entry["tags"])  # the set all_tags() would re-read every manifest for
@@ -435,6 +451,63 @@ def build_state(vault_root):
         "entries": entries,
         "tags": sorted(tags),
     }
+
+
+MAX_PERMISSION_ISSUES = 25
+
+
+def scan_permissions(vault_root):
+    """Studio mode: find files and folders other artists can't fully use.
+
+    Returns (problem_count, samples) where samples are up to
+    MAX_PERMISSION_ISSUES {path, problem} dicts. Checks what a colleague needs:
+    group read/write on files, group rwx + setgid on folders, the studio group
+    (when one is configured), and that this artist can read everything.
+    The trash is skipped; it never needs to be shared-writable to work."""
+    cfg = studio.load()
+    if not cfg or os.name == "nt" or not os.path.isdir(vault_root):
+        return 0, []
+    count = 0
+    samples = []
+
+    def flag(path, problem):
+        nonlocal count
+        count += 1
+        if len(samples) < MAX_PERMISSION_ISSUES:
+            samples.append({"path": os.path.relpath(path, vault_root).replace("\\", "/"), "problem": problem})
+
+    def check(path, is_dir):
+        try:
+            st = os.lstat(path)
+        except OSError:
+            return
+        if stat.S_ISLNK(st.st_mode):
+            return
+        mode = stat.S_IMODE(st.st_mode)
+        problems = []
+        if not os.access(path, os.R_OK | (os.X_OK if is_dir else 0)):
+            problems.append("you can't read it")
+        if is_dir:
+            if mode & 0o070 != 0o070:
+                problems.append("folder isn't group read/write/enter (needs g+rwx)")
+            elif not mode & stat.S_ISGID:
+                problems.append("folder is missing the setgid bit (g+s), so new files may get the wrong group")
+        elif mode & 0o060 != 0o060:
+            problems.append("file isn't group read/write (needs g+rw)")
+        if cfg["gid"] is not None and st.st_gid != cfg["gid"]:
+            problems.append(f"group isn't {cfg['group']}")
+        if problems:
+            flag(path, "; ".join(problems))
+
+    check(vault_root, True)
+    for dirpath, dirnames, filenames in os.walk(vault_root):
+        if dirpath == vault_root:
+            dirnames[:] = [d for d in dirnames if d != studio.TRASH_DIRNAME]
+        for name in dirnames:
+            check(os.path.join(dirpath, name), True)
+        for name in filenames:
+            check(os.path.join(dirpath, name), False)
+    return count, samples
 
 
 def health_report(vault_root):
@@ -543,6 +616,26 @@ def health_report(vault_root):
                         "message": "Example references a media file that is missing or invalid.",
                     })
 
+    if studio.enabled():
+        perm_count, perm_samples = scan_permissions(vault_root)
+        summary["permission_problems"] = perm_count
+        for sample in perm_samples:
+            issues.append({
+                "severity": "error",
+                "type": "permissions",
+                "path": sample["path"],
+                "message": (
+                    f"Other artists may not be able to use this: {sample['problem']}. "
+                    "A pipeline admin can fix the whole vault with: python vault_admin.py fix-permissions"
+                ),
+            })
+        if perm_count > len(perm_samples):
+            issues.append({
+                "severity": "error",
+                "type": "permissions",
+                "message": f"…and {perm_count - len(perm_samples)} more files or folders with permission problems.",
+            })
+
     return {"ok": not issues, "summary": summary, "issues": issues}
 
 
@@ -560,7 +653,7 @@ def cleanup_staging_entries(vault_root):
         if not os.path.isdir(path) or not utils.is_path_inside(edir, path):
             continue
         try:
-            method = utils.send_to_trash(path)
+            method = utils.send_to_trash(path, vault_root)
             removed.append({"path": os.path.relpath(path, vault_root).replace("\\", "/"), "method": method})
         except OSError as e:
             failed.append({"path": os.path.relpath(path, vault_root).replace("\\", "/"), "error": str(e)})

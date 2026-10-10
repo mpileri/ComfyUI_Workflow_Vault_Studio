@@ -5,14 +5,18 @@ Two layers of settings exist:
 - ``vault_config.json`` lives next to this extension and only stores which
   folder the user picked as their vault root, plus the list of named profiles
   (each its own vault root) and which one is active. It must exist outside the
-  vault itself, since it is needed before a vault root has been chosen.
+  vault itself, since it is needed before a vault root has been chosen. In
+  studio mode it moves to the artist's home folder (see
+  studio.user_config_path), and the studio's own vaults come from the studio
+  config instead, locked so nobody can repoint or remove them from the UI.
 - ``vault_settings.json`` lives inside the vault root and stores
-  vault-level preferences (show archived, default status, etc).
+  vault-level preferences (show archived, default status, etc). In studio mode
+  the personal ones are kept per artist instead (see prefs.py).
 """
 
 import os
 
-from . import utils
+from . import prefs, studio, utils
 
 EXTENSION_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXTENSION_CONFIG_PATH = os.path.join(EXTENSION_DIR, "vault_config.json")
@@ -56,17 +60,24 @@ CARD_FIELD_KEYS = ("description", "tags", "versions", "examples", "date")
 VALID_COMPRESS_FORMATS = ("webp", "jpeg")
 
 
+def extension_config_path():
+    return studio.user_config_path() if studio.enabled() else EXTENSION_CONFIG_PATH
+
+
 def load_extension_config():
-    return utils.read_json(EXTENSION_CONFIG_PATH, default={}) or {}
+    return utils.read_json(extension_config_path(), default={}) or {}
 
 
 def save_extension_config(cfg):
-    utils.atomic_write_json(EXTENSION_CONFIG_PATH, cfg)
+    utils.atomic_write_json(extension_config_path(), cfg, shared=False)
 
 
 def get_vault_root():
-    cfg = load_extension_config()
-    root = cfg.get("vault_root")
+    if studio.enabled():
+        profile = active_profile()
+        root = profile["vault_root"] if profile else None
+    else:
+        root = load_extension_config().get("vault_root")
     if root and os.path.isdir(root):
         return root
     return None
@@ -89,6 +100,12 @@ def get_vault_root():
 DEFAULT_PROFILE_NAME = "Default"
 MAX_PROFILE_NAME_LEN = 60
 PROFILE_NOT_FOUND = "Vault not found."
+PERSONAL_VAULTS_DISABLED = "Adding vaults is turned off by the studio configuration."
+
+
+def _locked_message(profile):
+    return (f"“{profile['name']}” is a studio vault. Its name and folder are set by the "
+            "studio configuration, so they can't be changed here.")
 
 
 def _same_path(a, b):
@@ -115,12 +132,37 @@ def _unique_name(profiles, base):
     return name
 
 
+def _resolve_studio_profiles(cfg):
+    """Studio mode: the studio's locked vaults first, then (when allowed) the
+    artist's own. The active one is the artist's last choice, else the
+    studio's default."""
+    profiles = studio.vaults()
+    if studio.allow_personal_vaults():
+        taken = {p["id"] for p in profiles}
+        for p in cfg.get("profiles") or []:
+            if not isinstance(p, dict) or p.get("locked"):
+                continue
+            pid, name, root = p.get("id"), clean_profile_name(p.get("name")), p.get("vault_root")
+            if not (isinstance(pid, str) and pid and name and isinstance(root, str) and root):
+                continue
+            if pid in taken or any(_same_path(q["vault_root"], root) for q in profiles):
+                continue
+            taken.add(pid)
+            profiles.append({"id": pid, "name": name, "vault_root": root})
+    active = cfg.get("active_profile")
+    if not any(p["id"] == active for p in profiles):
+        active = studio.default_vault_id() or (profiles[0]["id"] if profiles else None)
+    return profiles, active
+
+
 def _resolve_profiles(cfg):
     """Return (profiles, active_id) for a config dict, without writing anything.
 
     ``vault_root`` is the source of truth for which vault is active: if the
     stored active profile disagrees with it (an older version re-pointed the
     root), the profile that owns that root wins, or one is created for it."""
+    if studio.enabled():
+        return _resolve_studio_profiles(cfg)
     profiles = []
     seen_ids = set()
     for p in cfg.get("profiles") or []:
@@ -152,7 +194,9 @@ def _resolve_profiles(cfg):
 
 
 def _save_profiles(cfg, profiles, active_id):
-    cfg["profiles"] = profiles
+    # Studio vaults come from the studio config on every read; only the
+    # artist's own vaults (and which one is active) are theirs to store.
+    cfg["profiles"] = [p for p in profiles if not p.get("locked")]
     cfg["active_profile"] = active_id
     active = next((p for p in profiles if p["id"] == active_id), None)
     if active:
@@ -161,27 +205,52 @@ def _save_profiles(cfg, profiles, active_id):
 
 
 def list_profiles():
-    """Return {"profiles": [{id, name, vault_root}], "active": id or None}."""
+    """Return {"profiles": [{id, name, vault_root, locked?}], "active": id or None}."""
     profiles, active = _resolve_profiles(load_extension_config())
     return {"profiles": profiles, "active": active}
+
+
+def active_profile():
+    profiles, active = _resolve_profiles(load_extension_config())
+    return next((p for p in profiles if p["id"] == active), None)
+
+
+def check_set_vault_root(path):
+    """Why set_vault_root(path) would be refused, or None if it's allowed.
+    Callers check first so a refused change never initializes the folder."""
+    profiles, active = _resolve_profiles(load_extension_config())
+    if any(_same_path(p["vault_root"], path) for p in profiles):
+        return None  # switching to a vault that already exists
+    current = next((p for p in profiles if p["id"] == active), None)
+    if current and current.get("locked"):
+        return _locked_message(current)
+    if not current and not studio.allow_personal_vaults():
+        return PERSONAL_VAULTS_DISABLED
+    return None
 
 
 def set_vault_root(path):
     """Point the active profile at ``path`` (creating a profile if there is
     none yet). If another profile already uses ``path``, that profile becomes
-    active instead of two profiles sharing one folder."""
+    active instead of two profiles sharing one folder. Studio vaults are never
+    repointed (see check_set_vault_root). Returns an error message or None."""
+    problem = check_set_vault_root(path)
+    if problem:
+        return problem
     cfg = load_extension_config()
     profiles, active = _resolve_profiles(cfg)
     owner = next((p for p in profiles if _same_path(p["vault_root"], path)), None)
     if owner:
         active = owner["id"]
-        owner["vault_root"] = path
+        if not owner.get("locked"):
+            owner["vault_root"] = path
     elif active:
         next(p for p in profiles if p["id"] == active)["vault_root"] = path
     else:
         active = "default"
         profiles.append({"id": active, "name": DEFAULT_PROFILE_NAME, "vault_root": path})
     _save_profiles(cfg, profiles, active)
+    return None
 
 
 def validate_new_profile(name, vault_root):
@@ -191,6 +260,8 @@ def validate_new_profile(name, vault_root):
         return "Vault name is required."
     if len(name) > MAX_PROFILE_NAME_LEN:
         return f"Vault name must be {MAX_PROFILE_NAME_LEN} characters or fewer."
+    if not studio.allow_personal_vaults():
+        return PERSONAL_VAULTS_DISABLED
     profiles, _active = _resolve_profiles(load_extension_config())
     if _name_taken(profiles, name):
         return f"A vault named “{name}” already exists."
@@ -241,6 +312,8 @@ def rename_profile(profile_id, name):
     profile = next((p for p in profiles if p["id"] == profile_id), None)
     if not profile:
         return None, PROFILE_NOT_FOUND
+    if profile.get("locked"):
+        return None, _locked_message(profile)
     if _name_taken(profiles, name, ignore_id=profile_id):
         return None, f"A vault named “{name}” already exists."
     profile["name"] = name
@@ -253,8 +326,11 @@ def remove_profile(profile_id):
     Returns an error message or None."""
     cfg = load_extension_config()
     profiles, active = _resolve_profiles(cfg)
-    if not any(p["id"] == profile_id for p in profiles):
+    profile = next((p for p in profiles if p["id"] == profile_id), None)
+    if not profile:
         return PROFILE_NOT_FOUND
+    if profile.get("locked"):
+        return _locked_message(profile)
     if profile_id == active:
         return "Switch to another vault before removing this one."
     _save_profiles(cfg, [p for p in profiles if p["id"] != profile_id], active)
@@ -301,8 +377,8 @@ def is_empty(vault_root):
 
 
 def initialize_vault(vault_root):
-    os.makedirs(vault_root, exist_ok=True)
-    os.makedirs(entries_dir(vault_root), exist_ok=True)
+    utils.makedirs(vault_root)
+    utils.makedirs(entries_dir(vault_root))
     settings_path = os.path.join(vault_root, "vault_settings.json")
     folders_path = os.path.join(vault_root, "folders.json")
     if not os.path.isfile(settings_path):
@@ -311,8 +387,15 @@ def initialize_vault(vault_root):
         utils.atomic_write_json(folders_path, {"folders": []})
 
 
-def load_vault_settings(vault_root):
+def _shared_settings(vault_root):
     settings = utils.read_json(os.path.join(vault_root, "vault_settings.json"), default={})
+    return settings if isinstance(settings, dict) else {}
+
+
+def load_vault_settings(vault_root):
+    settings = _shared_settings(vault_root)
+    if studio.enabled():
+        settings = {**settings, **prefs.personal_settings(vault_root)}
     merged = dict(DEFAULT_VAULT_SETTINGS)
     merged.update(settings or {})
     if "card_size" not in (settings or {}):
@@ -331,8 +414,30 @@ def load_vault_settings(vault_root):
     return merged
 
 
-def save_vault_settings(vault_root, updates):
+def shared_setting_changes(vault_root, updates):
+    """The subset of `updates` that would change vault-wide (not personal)
+    settings. Studio admins gate these."""
+    if not studio.enabled():
+        return dict(updates)
     current = load_vault_settings(vault_root)
-    current.update(updates)
-    utils.atomic_write_json(os.path.join(vault_root, "vault_settings.json"), current)
-    return current
+    return {
+        k: v for k, v in updates.items()
+        if k not in prefs.PERSONAL_SETTING_KEYS and current.get(k) != v
+    }
+
+
+def save_vault_settings(vault_root, updates):
+    if not studio.enabled():
+        current = load_vault_settings(vault_root)
+        current.update(updates)
+        utils.atomic_write_json(os.path.join(vault_root, "vault_settings.json"), current)
+        return current
+    # Studio: personal view settings go to the artist's own file; the shared
+    # vault_settings.json is only rewritten when a vault-wide value changes.
+    prefs.update_settings(vault_root, updates)
+    shared = shared_setting_changes(vault_root, updates)
+    if shared:
+        stored = _shared_settings(vault_root)
+        stored.update(shared)
+        utils.atomic_write_json(os.path.join(vault_root, "vault_settings.json"), stored)
+    return load_vault_settings(vault_root)

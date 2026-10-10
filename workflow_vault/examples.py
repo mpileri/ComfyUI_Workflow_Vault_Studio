@@ -68,8 +68,8 @@ def create_example(vault_root, manifest, slug, data, input_files=None, output_fi
     edir = storage.example_dir(vault_root, slug, example_dir_name)
     inputs_dir = os.path.join(edir, "inputs")
     outputs_dir = os.path.join(edir, "outputs")
-    os.makedirs(inputs_dir, exist_ok=True)
-    os.makedirs(outputs_dir, exist_ok=True)
+    utils.makedirs(inputs_dir)
+    utils.makedirs(outputs_dir)
 
     compress = _compress_opts(vault_root)
     inputs, skipped_in = _save_media_list(inputs_dir, input_files, "inputs", compress)
@@ -83,13 +83,14 @@ def create_example(vault_root, manifest, slug, data, input_files=None, output_fi
         "inputs": inputs,
         "outputs": outputs,
     }
+    utils.stamp_created(example)
     # If siblings already carry an explicit order, keep this one last so it
     # doesn't jump ahead of an existing custom arrangement.
     sibling_orders = [e["order"] for e in storage.list_examples(vault_root, slug) if e.get("order") is not None]
     if sibling_orders:
         example["order"] = max(sibling_orders) + 1
     utils.atomic_write_json(os.path.join(edir, "example.json"), example)
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     example["dir"] = example_dir_name
     return example, None, skipped_in + skipped_out
 
@@ -101,18 +102,18 @@ def _find_example(vault_root, slug, example_id):
     return None
 
 
-def _send_to_trash_best_effort(path, allowed_root):
+def _send_to_trash_best_effort(path, allowed_root, vault_root):
     path = os.path.normpath(path)
     allowed_root = os.path.normpath(allowed_root)
     if not utils.is_path_inside(allowed_root, path) or not os.path.exists(path):
         return None
     try:
-        return utils.send_to_trash(path)
+        return utils.send_to_trash(path, vault_root)
     except OSError:
         return None
 
 
-def _apply_media_layout(edir, example, new_inputs, new_outputs):
+def _apply_media_layout(vault_root, edir, example, new_inputs, new_outputs):
     """Reconcile the example's inputs/outputs to the given ordered specs.
 
     Items may move between the two sections (their file is relocated between
@@ -136,7 +137,7 @@ def _apply_media_layout(edir, example, new_inputs, new_outputs):
                 item["label"] = (spec["label"] or "").strip() or item["label"]
             if cur_role != target_role:
                 target_dir = os.path.join(edir, target_role)
-                os.makedirs(target_dir, exist_ok=True)
+                utils.makedirs(target_dir)
                 final_name = media._unique_filename(target_dir, os.path.basename(item["file"]))
                 new_rel = f"{target_role}/{final_name}"
                 try:
@@ -156,7 +157,7 @@ def _apply_media_layout(edir, example, new_inputs, new_outputs):
         if iid not in kept:
             fpath = os.path.join(edir, item["file"])
             if os.path.isfile(fpath):
-                _send_to_trash_best_effort(fpath, edir)
+                _send_to_trash_best_effort(fpath, edir, vault_root)
 
     example["inputs"] = inputs
     example["outputs"] = outputs
@@ -179,7 +180,7 @@ def update_example(vault_root, manifest, slug, example_id, data,
     if "inputs" in data or "outputs" in data:
         cur_inputs = [{"id": it["id"], "label": it.get("label")} for it in example.get("inputs", [])]
         cur_outputs = [{"id": it["id"], "label": it.get("label")} for it in example.get("outputs", [])]
-        _apply_media_layout(edir, example, data.get("inputs", cur_inputs), data.get("outputs", cur_outputs))
+        _apply_media_layout(vault_root, edir, example, data.get("inputs", cur_inputs), data.get("outputs", cur_outputs))
 
     skipped = []
     compress = _compress_opts(vault_root)
@@ -192,9 +193,10 @@ def update_example(vault_root, manifest, slug, example_id, data,
         example["outputs"] = example.get("outputs", []) + new_items
         skipped += skipped_out
 
+    utils.touch(example)
     saved = {k: v for k, v in example.items() if k != "dir"}
     utils.atomic_write_json(os.path.join(edir, "example.json"), saved)
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     example["dir"] = example["dir"]
     return example, None, skipped
 
@@ -217,7 +219,7 @@ def reorder_examples(vault_root, manifest, slug, ordered_ids):
         saved["order"] = order
         utils.atomic_write_json(os.path.join(edir, "example.json"), saved)
 
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     return True, None
 
 
@@ -230,10 +232,10 @@ def delete_example(vault_root, manifest, slug, example_id):
     if not utils.is_path_inside(examples_root, edir) or not os.path.isdir(edir):
         return False, "Example folder not found."
     try:
-        utils.send_to_trash(edir)
+        utils.send_to_trash(edir, vault_root)
     except OSError as e:
         return False, f"Could not delete example: {e}"
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     return True, None
 
 

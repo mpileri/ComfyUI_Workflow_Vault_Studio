@@ -25,7 +25,7 @@ export function renderDocsTab(controller, entry) {
     if (saveBtn) saveBtn.disabled = true;
     try {
       const formData = new FormData();
-      formData.append("data", JSON.stringify({ notes: editor.getNotes() }));
+      formData.append("data", JSON.stringify({ notes: editor.getNotes(), base_updated_at: entry.updated_at }));
       await VaultAPI.updateEntryMetadata(entry.id, formData);
       controller.setDirty(false);
       await controller.refresh();

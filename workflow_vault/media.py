@@ -129,7 +129,7 @@ def copy_media_bytes(dest_dir, data, filename, mtime=None):
     """Copy bytes into dest_dir using a safe filename, returning the final
     filename used (renamed on collision). When mtime (POSIX seconds) is given,
     stamp it onto the saved file so converted files keep their source date."""
-    os.makedirs(dest_dir, exist_ok=True)
+    utils.makedirs(dest_dir)
     safe_name = os.path.basename(filename or "").strip() or "file"
     final_name = _unique_filename(dest_dir, safe_name)
     dest_path = os.path.join(dest_dir, final_name)
@@ -297,7 +297,7 @@ def _repoint_reference(vault_root, slug, manifest, old_rel, new_rel):
             manifest[key] = new_rel
             changed = True
     if changed:
-        manifest["updated_at"] = utils.now_iso()
+        utils.touch(manifest)
         storage.write_manifest(vault_root, slug, manifest)
         return True
 
@@ -429,6 +429,8 @@ def finish_h264_conversion(vault_root, entry_id, plan):
         _discard()
         return None, "Could not update the entry to use the converted video."
 
+    # ffmpeg created the file with the plain umask; share it like the rest.
+    utils.share_path(plan["dest_abs"])
     # Carry the source's dates over so the vault keeps sorting by when the
     # media was actually made, not when it happened to be converted.
     try:

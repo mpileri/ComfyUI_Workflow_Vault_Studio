@@ -1,0 +1,27 @@
+{
+  "vaults": [
+    {
+      "id": "studio",
+      "name": "Studio",
+      "path": {
+        "linux": "/mnt/pipeline/comfyui/workflow_vault",
+        "windows": "P:\\comfyui\\workflow_vault",
+        "darwin": "/Volumes/pipeline/comfyui/workflow_vault"
+      }
+    },
+    {
+      "id": "rnd",
+      "name": "R&D",
+      "path": "/mnt/pipeline/comfyui/rnd_vault"
+    }
+  ],
+  "default_vault": "studio",
+  "allow_personal_vaults": false,
+
+  "group": "comfyusers",
+  "file_mode": "664",
+  "dir_mode": "2775",
+
+  "trash": "vault",
+  "admins": ["pipeline", "supervisor"]
+}

@@ -1,4 +1,13 @@
-# ComfyUI Workflow Vault
+# ComfyUI Workflow Vault — Studio edition
+
+> **This is a multi-user fork** of
+> [avillabon/ComfyUI_Workflow_Vault](https://github.com/avillabon/ComfyUI_Workflow_Vault)
+> that adds a **studio mode**: one shared vault on network storage for every
+> artist in a studio, each running their own ComfyUI as their own user. It
+> fixes the owner-only file permissions that made a shared vault unusable, and
+> adds cross-machine locking, a shared trash, per-artist favorites, authorship,
+> and admin roles. **Setup guide: [STUDIO.md](STUDIO.md).** Without a studio
+> config it behaves exactly like the original, documented below.
 
 A local, single-user workflow library built into ComfyUI. Save workflows as
 structured "vault entries" with versions, example media, and Markdown

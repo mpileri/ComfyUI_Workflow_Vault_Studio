@@ -48,8 +48,10 @@ function renderVersionCard(controller, entry, version) {
 
   card.appendChild(
     el("div", { className: "wv-version-meta" }, [
-      `Created ${formatDate(version.created_at)}`,
-      version.updated_at && version.updated_at !== version.created_at ? ` · Updated ${formatDate(version.updated_at)}` : "",
+      `Created ${formatDate(version.created_at)}${version.created_by ? ` by ${version.created_by}` : ""}`,
+      version.updated_at && version.updated_at !== version.created_at
+        ? ` · Updated ${formatDate(version.updated_at)}${version.updated_by && version.updated_by !== version.created_by ? ` by ${version.updated_by}` : ""}`
+        : "",
     ])
   );
 

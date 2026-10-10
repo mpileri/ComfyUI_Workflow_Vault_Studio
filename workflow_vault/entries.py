@@ -110,11 +110,10 @@ def create_entry(vault_root, data):
 
     final_dir = storage.entry_dir(vault_root, slug)
     staging_dir = storage.entry_dir(vault_root, staging_slug)
-    os.makedirs(storage.thumbnails_dir(vault_root, staging_slug), exist_ok=True)
-    os.makedirs(storage.versions_dir(vault_root, staging_slug), exist_ok=True)
-    os.makedirs(storage.examples_dir(vault_root, staging_slug), exist_ok=True)
+    utils.makedirs(storage.thumbnails_dir(vault_root, staging_slug))
+    utils.makedirs(storage.versions_dir(vault_root, staging_slug))
+    utils.makedirs(storage.examples_dir(vault_root, staging_slug))
 
-    now = utils.now_iso()
     manifest = {
         "schema_version": "1.0",
         "id": utils.generate_id("entry"),
@@ -135,9 +134,8 @@ def create_entry(vault_root, data):
         # preserved and can be converted to tags (see convert_folders_to_tags).
         "folder_id": None,
         "current_version_id": None,
-        "created_at": now,
-        "updated_at": now,
     }
+    utils.stamp_created(manifest)
 
     # Best-effort media (archival originals, the compare overlay) must never
     # discard an otherwise-good entry — but the user has to be told when one
@@ -351,7 +349,7 @@ def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None,
             return slug, "A folder for this slug already exists on disk.", warnings
         os.rename(old_dir, new_dir)
 
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     storage.write_manifest(vault_root, new_slug, manifest)
     return new_slug, None, warnings
 
@@ -363,21 +361,22 @@ def set_archived(vault_root, manifest, slug, archived, restore_status=None):
     else:
         manifest["status"] = restore_status or manifest.pop("_pre_archive_status", "draft")
         manifest.pop("_pre_archive_status", None)
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     storage.write_manifest(vault_root, slug, manifest)
 
 
 def delete_entry(vault_root, slug):
-    """Permanently remove an entry's whole folder, preferring the OS trash
-    (Recycle Bin) so it stays recoverable. Returns (method, error) where method
-    is "trash" or "permanent"."""
+    """Remove an entry's whole folder, preferring a trash (the vault's shared
+    .trash in studio mode, else the OS Recycle Bin/Trash) so it stays
+    recoverable. Returns (method, error) where method is "vault_trash",
+    "trash" or "permanent"."""
     edir = storage.entry_dir(vault_root, slug)
     # Defensive: never delete anything outside the vault's entries directory.
     entries_root = config.entries_dir(vault_root)
     if not os.path.isdir(edir) or not utils.is_path_inside(entries_root, edir):
         return None, "Entry not found."
     try:
-        method = utils.send_to_trash(edir)
+        method = utils.send_to_trash(edir, vault_root)
     except OSError as e:
         return None, f"Could not delete entry: {e}"
     return method, None
@@ -405,17 +404,18 @@ def duplicate_entry(vault_root, source_slug, new_name):
     dst_dir = storage.entry_dir(vault_root, new_slug)
     try:
         shutil.copytree(src_dir, dst_dir)
-    except OSError as e:
+    except (OSError, shutil.Error) as e:
         shutil.rmtree(dst_dir, ignore_errors=True)
         return None, f"Could not copy entry files: {e}"
+    # copytree carries the source's modes over; the copy belongs to whoever
+    # made it and must be usable by everyone, like any new entry.
+    utils.share_tree(dst_dir)
 
     manifest = storage.read_manifest(vault_root, new_slug)
-    now = utils.now_iso()
     manifest["id"] = utils.generate_id("entry")
     manifest["slug"] = new_slug
     manifest["name"] = new_name
-    manifest["created_at"] = now
-    manifest["updated_at"] = now
+    utils.stamp_created(manifest)
     # A duplicate is a brand-new entry: tag-first, never filed into a folder.
     manifest["folder_id"] = None
 
@@ -455,11 +455,9 @@ def _trim_to_single_version(vault_root, slug, manifest, source_current_version_i
     vpath = os.path.join(new_dir, "version.json")
     vdata = utils.read_json(vpath) or {}
     new_version_id = utils.generate_id("version")
-    created = utils.now_iso()
     vdata["id"] = new_version_id
     vdata["label"] = "v001"
-    vdata["created_at"] = created
-    vdata["updated_at"] = created
+    utils.stamp_created(vdata)
     utils.atomic_write_json(vpath, vdata)
     manifest["current_version_id"] = new_version_id
 

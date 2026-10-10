@@ -1,7 +1,7 @@
 [project]
-name = "comfy-workflow-vault"
-version = "1.9.1"
-description = "A local, single-user workflow library inside ComfyUI: save workflows as structured entries with versions, example media, and Markdown docs, then browse, tag, search, and reopen them."
+name = "comfy-workflow-vault-studio"
+version = "1.9.1+studio.1"
+description = "Studio (multi-user) fork of Workflow Vault: one shared workflow library on network storage for every artist, with shared permissions, cross-machine locking, a shared trash, authorship, and admin roles."
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,4 +18,4 @@ Repository = "https://github.com/avillabon/ComfyUI_Workflow_Vault"
 # PublisherId is the @handle from your registry.comfy.org profile (public — NOT
 # the API key): https://registry.comfy.org/publishers/avillabon
 PublisherId = "avillabon"
-DisplayName = "Workflow Vault"
+DisplayName = "Workflow Vault Studio"

@@ -26,6 +26,24 @@ function panel(title, icon, hint) {
   return p;
 }
 
+// Studio mode with admins configured: vault-wide settings belong to them. The
+// server enforces this too; disabling the controls just avoids a dead end.
+function isVaultAdmin(state) {
+  return !state.studio?.enabled || state.studio.is_admin !== false;
+}
+
+function adminsHint(state) {
+  const admins = state.studio?.admins || [];
+  return `Shared by everyone using this vault, so only vault admins can change it${admins.length ? ` (${admins.join(", ")})` : ""}.`;
+}
+
+function lockPanelForNonAdmin(state, panelEl) {
+  if (isVaultAdmin(state)) return;
+  for (const control of panelEl.querySelectorAll("input, select, button, textarea")) control.disabled = true;
+  panelEl.classList.add("wv-vs-panel-locked");
+  panelEl.appendChild(el("div", { className: "wv-vs-hint wv-vs-locked-hint" }, [el("i", { className: "pi pi-lock" }), " ", adminsHint(state)]));
+}
+
 function settingRow(label, control) {
   return el("div", { className: "wv-vs-row" }, [el("span", { className: "wv-vs-row-label" }, [label]), control]);
 }
@@ -239,16 +257,24 @@ export function renderGlobalSettings(controller) {
 
   // Location and accent color belong to the active vault, so they live in the
   // Vaults tab (collected in activePanels and handed to it at the bottom).
-  const activeName = activeProfile(state)?.name;
+  const active = activeProfile(state);
+  const activeName = active?.name;
   const activePanels = [];
   const locPanel = panel(
     activeName ? "Active vault: folder" : "Vault folder",
     "pi pi-folder",
-    activeName
-      ? `Where “${activeName}” keeps its entries and media on disk. Re-pointing it here changes this vault's folder; to keep a separate vault, add another one below.`
-      : "Where entries and media are stored on disk."
+    active?.locked
+      ? `“${activeName}” is a shared studio vault. Its folder is set in the studio configuration by your pipeline team, so it can't be changed here.`
+      : activeName
+        ? `Where “${activeName}” keeps its entries and media on disk. Re-pointing it here changes this vault's folder; to keep a separate vault, add another one below.`
+        : "Where entries and media are stored on disk."
   );
-  locPanel.appendChild(el("div", { className: "wv-vs-location-row" }, [locationInput, locationBrowseBtn, changeBtn]));
+  if (active?.locked) {
+    locationInput.disabled = true;
+    locPanel.appendChild(el("div", { className: "wv-vs-location-row" }, [locationInput]));
+  } else {
+    locPanel.appendChild(el("div", { className: "wv-vs-location-row" }, [locationInput, locationBrowseBtn, changeBtn]));
+  }
   locPanel.appendChild(locationStatus);
   activePanels.push(locPanel);
 
@@ -268,6 +294,10 @@ export function renderGlobalSettings(controller) {
   const defPanel = panel("Defaults", "pi pi-sliders-h", null);
   defPanel.appendChild(settingRow("Show archived entries by default", showArchivedSwitch));
   defPanel.appendChild(settingRow("When an entry has no thumbnail", thumbBehaviorSelect));
+  if (!isVaultAdmin(state)) {
+    thumbBehaviorSelect.disabled = true;
+    thumbBehaviorSelect.title = adminsHint(state);
+  }
   sections.general.appendChild(defPanel);
 
   // --- Card display (cosmetic field toggles) ---
@@ -342,6 +372,7 @@ export function renderGlobalSettings(controller) {
   );
   activePanels.push(accentPanel);
   syncAccent();
+  lockPanelForNonAdmin(state, accentPanel);
 
   // --- Storage (example image compression) ---
   const pillowOk = state.pillow_available !== false;
@@ -471,6 +502,7 @@ export function renderGlobalSettings(controller) {
   }
   sections.storage.appendChild(storagePanel);
   syncCompressUi();
+  lockPanelForNonAdmin(state, storagePanel);
 
   // --- Backup (full-vault export) ---
   const exportPanel = panel("Backup", "pi pi-download", "Download the entire vault — entries, media, versions, and settings — as a single .zip.");
@@ -506,6 +538,7 @@ export function renderGlobalSettings(controller) {
     tagPanel.appendChild(listEl);
   }
   sections.organize.appendChild(tagPanel);
+  lockPanelForNonAdmin(state, tagPanel);
 
   // --- Legacy folders (deprecated; explicit one-time conversion to tags) ---
   // Folders are no longer an active concept. This panel only appears for older
@@ -607,6 +640,7 @@ export function renderGlobalSettings(controller) {
       legacyPanel.appendChild(el("div", { className: "wv-vs-batch-action" }, [convertStatus, convertBtn]));
     }
     sections.organize.appendChild(legacyPanel);
+    lockPanelForNonAdmin(state, legacyPanel);
   }
 
   // --- Health / recovery ---
@@ -824,6 +858,7 @@ function issueTitle(issue) {
     missing_media: "Missing media",
     missing_workflow: "Missing workflow",
     missing_example_media: "Missing example media",
+    permissions: "Permissions",
   };
   return names[issue?.type] || "Vault issue";
 }

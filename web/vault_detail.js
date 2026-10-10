@@ -445,6 +445,9 @@ function renderEntryMetadataForm(controller, entry) {
         status: statusSelect.value,
         generation_types: genTypePicker.getSelected(),
         favorite: favSwitch.input.checked,
+        // Lets the server refuse the save if someone else changed the entry
+        // since this form was rendered (shared studio vaults).
+        base_updated_at: entry.updated_at,
       };
       // Display thumbnail + untouched original (archival), both stamped
       // with the source date. For a video the picker yields an animated
@@ -603,8 +606,9 @@ function renderStatsTiles(entry) {
     ]);
     return t;
   };
-  tiles.appendChild(tile("Created", dateOnly(entry.created_at)));
-  tiles.appendChild(tile("Updated", dateOnly(entry.updated_at)));
+  const by = (who) => (who ? ` · ${who}` : "");
+  tiles.appendChild(tile("Created", `${dateOnly(entry.created_at)}${by(entry.created_by)}`));
+  tiles.appendChild(tile("Updated", `${dateOnly(entry.updated_at)}${by(entry.updated_by)}`));
   const currentVersion = (entry.versions || []).find((v) => v.id === entry.current_version_id);
   tiles.appendChild(tile("Current version", currentVersion ? currentVersion.custom_label || currentVersion.label : "—", true));
   return tiles;

@@ -45,28 +45,26 @@ def create_version(vault_root, manifest, slug, workflow, label=None, custom_labe
         return None, f"Version label '{custom_label}' already exists in this entry."
 
     version_id = utils.generate_id("version")
-    now = utils.now_iso()
     dir_name = utils.unique_slug(utils.slugify(label), {v["dir"] for v in existing})
 
     vdir = storage.version_dir(vault_root, slug, dir_name)
-    os.makedirs(vdir, exist_ok=True)
+    utils.makedirs(vdir)
     utils.atomic_write_json(os.path.join(vdir, "workflow.json"), workflow)
 
     version = {
         "id": version_id,
         "label": label,
         "custom_label": custom_label,
-        "created_at": now,
-        "updated_at": now,
         "notes": notes or "",
         "workflow_file": "workflow.json",
     }
+    now = utils.stamp_created(version)
     utils.atomic_write_json(os.path.join(vdir, "version.json"), version)
     version["dir"] = dir_name
 
     if make_current:
         manifest["current_version_id"] = version_id
-    manifest["updated_at"] = now
+    utils.touch(manifest, now)
 
     return version, None
 
@@ -94,15 +92,14 @@ def overwrite_version(vault_root, manifest, slug, version_id, workflow, notes=No
     vdir = storage.version_dir(vault_root, slug, version["dir"])
     utils.atomic_write_json(os.path.join(vdir, _workflow_filename(version)), workflow)
 
-    now = utils.now_iso()
-    version["updated_at"] = now
+    now = utils.touch(version)
     if notes is not None:
         version["notes"] = notes
 
     saved = {k: v for k, v in version.items() if k != "dir"}
     utils.atomic_write_json(os.path.join(vdir, "version.json"), saved)
 
-    manifest["updated_at"] = now
+    utils.touch(manifest, now)
     return version, None
 
 
@@ -111,7 +108,7 @@ def promote_version(vault_root, manifest, slug, version_id):
     if not version:
         return None, "Version not found."
     manifest["current_version_id"] = version_id
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     return version, None
 
 
@@ -120,11 +117,11 @@ def update_version_notes(vault_root, manifest, slug, version_id, notes):
     if not version:
         return None, "Version not found."
     version["notes"] = notes or ""
-    version["updated_at"] = utils.now_iso()
+    now = utils.touch(version)
     vdir = storage.version_dir(vault_root, slug, version["dir"])
     saved = {k: v for k, v in version.items() if k != "dir"}
     utils.atomic_write_json(os.path.join(vdir, "version.json"), saved)
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest, now)
     return version, None
 
 
@@ -150,7 +147,7 @@ def delete_version(vault_root, manifest, slug, version_id):
     if not utils.is_path_inside(versions_root, vdir) or not os.path.isdir(vdir):
         return None, "Version folder not found."
     try:
-        utils.send_to_trash(vdir)
+        utils.send_to_trash(vdir, vault_root)
     except OSError as e:
         return None, f"Could not delete version: {e}"
 
@@ -158,7 +155,7 @@ def delete_version(vault_root, manifest, slug, version_id):
         # list_versions sorts oldest first, so the last survivor is the newest.
         survivors = [v for v in all_versions if v.get("id") != version_id]
         manifest["current_version_id"] = survivors[-1].get("id")
-    manifest["updated_at"] = utils.now_iso()
+    utils.touch(manifest)
     return manifest.get("current_version_id"), None
 
 

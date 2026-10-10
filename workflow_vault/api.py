@@ -10,7 +10,8 @@ from urllib.parse import urlsplit
 from aiohttp import web
 from server import PromptServer
 
-from . import config, entries, examples, exporting, folders, media, storage, utils, versions, video
+from . import (config, entries, examples, exporting, folders, locking, media, prefs, storage, studio,
+               utils, versions, video)
 
 routes = PromptServer.instance.routes
 
@@ -22,8 +23,13 @@ MAX_MULTIPART_BYTES = 768 * 1024 * 1024  # 768 MB total per request
 # Mutating endpoints perform read/modify/write cycles across several plain
 # files. Serialize those cycles per vault root so concurrent browser tabs do
 # not clobber each other's manifest/folder/example updates inside one ComfyUI
-# process.
+# process, and (via a lock file in the vault) across every other artist's
+# ComfyUI using the same shared vault.
 _WRITE_LOCKS = {}
+
+# How long a save waits for another process's write to finish before giving
+# up with "busy". Batch compression can hold the lock for a while.
+VAULT_LOCK_TIMEOUT = 60
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +87,12 @@ def _guard_csrf(handler):
     async def wrapped(request):
         if not _is_same_origin(request):
             return _error("Blocked: this request appears to come from another site.", 403)
-        return await handler(request)
+        try:
+            return await handler(request)
+        except locking.VaultBusy:
+            return _error(
+                "The vault is busy: someone else is saving a large change right now. "
+                "Try again in a moment.", 503)
 
     return wrapped
 
@@ -125,13 +136,74 @@ def _require_entry(vault_root, entry_id):
     return slug, manifest, None
 
 
+class _VaultWriteLock:
+    """This process's asyncio lock for a vault, then the vault's lock file
+    (shared with every other ComfyUI using it). Raises locking.VaultBusy if
+    the file lock isn't free within VAULT_LOCK_TIMEOUT seconds."""
+
+    def __init__(self, local_lock, vault_root):
+        self._local = local_lock
+        self._root = vault_root
+        self._file = None
+
+    async def __aenter__(self):
+        await self._local.acquire()
+        try:
+            # Only real vaults get a lock file: a folder the user is merely
+            # proposing as a vault must stay untouched until they confirm.
+            if self._root and config.is_initialized(self._root):
+                self._file = await _acquire_file_lock(self._root)
+        except BaseException:
+            self._local.release()
+            raise
+        return self
+
+    async def __aexit__(self, *exc):
+        try:
+            if self._file:
+                self._file.release()
+                self._file = None
+        finally:
+            self._local.release()
+
+
+async def _acquire_file_lock(vault_root):
+    lock = locking.VaultFileLock(vault_root)
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + VAULT_LOCK_TIMEOUT
+    while True:
+        # Off the event loop: on a network mount the open/lock calls are RPCs.
+        if await asyncio.to_thread(lock.try_acquire):
+            return lock
+        if loop.time() >= deadline:
+            lock.release()
+            raise locking.VaultBusy()
+        await asyncio.sleep(0.2)
+
+
 def _write_lock(vault_root):
     key = os.path.realpath(vault_root or "__workflow_vault_extension__")
     lock = _WRITE_LOCKS.get(key)
     if lock is None:
         lock = asyncio.Lock()
         _WRITE_LOCKS[key] = lock
-    return lock
+    return _VaultWriteLock(lock, vault_root)
+
+
+def _require_admin(action):
+    """Studio mode with admins configured: vault-wide operations are theirs.
+    Returns an error response, or None when allowed."""
+    if studio.is_admin():
+        return None
+    admins = ", ".join(studio.load()["admins"])
+    return _error(f"Only vault admins can {action} ({admins}).", 403)
+
+
+def _require_can_delete(what, *records):
+    if studio.can_delete(*records):
+        return None
+    admins = ", ".join(studio.load()["admins"])
+    return _error(f"You can only delete {what} you created. Ask a vault admin ({admins}).", 403)
 
 
 class _MultipartError(Exception):
@@ -215,10 +287,10 @@ def _collect_indexed_files(files, prefix, labels=None):
 
 
 def _profile_fields():
-    """Profile list + active id, merged into every state/settings response so the
-    UI never needs a second request to show the profile switcher."""
+    """Profile list + active id (and studio mode info), merged into every
+    state/settings response so the UI never needs a second request."""
     info = config.list_profiles()
-    return {"profiles": info["profiles"], "active_profile": info["active"]}
+    return {"profiles": info["profiles"], "active_profile": info["active"], "studio": studio.public_info()}
 
 
 def _full_state(vault_root):
@@ -266,10 +338,41 @@ def _prepare_vault_root(new_root, confirm):
 # Settings / vault initialization
 # ---------------------------------------------------------------------------
 
+async def _studio_vault_problem():
+    """Studio mode, active vault set by the studio: initialize it the first
+    time anyone opens it, or explain why it can't be used. Returns a message
+    for the UI, or None when the vault is ready."""
+    cfg = studio.load()
+    if cfg and cfg["error"]:
+        return cfg["error"]
+    profile = config.active_profile()
+    if not profile:
+        if cfg and not cfg["allow_personal_vaults"]:
+            return ("Studio mode is on but no studio vault is configured. "
+                    f"Add one to {cfg['path'] or 'the studio config'} (or set WORKFLOW_VAULT_ROOT).")
+        return None
+    if not profile.get("locked"):
+        return None
+    root = profile["vault_root"]
+    if not os.path.isdir(root):
+        return (f"The studio vault folder “{root}” isn't reachable from this machine. "
+                "Check that the network share is mounted, or ask your pipeline team.")
+    if config.is_initialized(root):
+        return None
+    if not os.access(root, os.W_OK):
+        return (f"The studio vault folder “{root}” isn't set up yet and you can't write to it. "
+                "Ask your pipeline team to run: python vault_admin.py init")
+    async with _write_lock(root):
+        if not config.is_initialized(root):
+            config.initialize_vault(root)
+    return None
+
+
 @routes.get("/workflow-vault/state")
 async def get_state(request):
+    studio_error = await _studio_vault_problem() if studio.enabled() else None
     vault_root = config.get_vault_root()
-    if not vault_root or not config.is_initialized(vault_root):
+    if studio_error or not vault_root or not config.is_initialized(vault_root):
         return web.json_response({
             "vault_root": vault_root,
             "initialized": False,
@@ -278,6 +381,7 @@ async def get_state(request):
             "entries": [],
             "tags": [],
             "extension_dir": config.EXTENSION_DIR,
+            "studio_error": studio_error,
             **_profile_fields(),
         })
     return web.json_response(_full_state(vault_root))
@@ -314,11 +418,16 @@ def _apply_settings(body):
 
     if "vault_root" in body:
         new_root = (body.get("vault_root") or "").strip()
+        problem = config.check_set_vault_root(new_root)
+        if problem:
+            return _error(problem, 403)
         err_response = _prepare_vault_root(new_root, body.get("confirm"))
         if err_response:
             return err_response
 
-        config.set_vault_root(new_root)
+        problem = config.set_vault_root(new_root)
+        if problem:
+            return _error(problem, 403)
         vault_root = new_root
 
     if vault_root is None:
@@ -371,6 +480,12 @@ def _apply_settings(body):
         updates["compress_thumbnail_source"] = bool(body["compress_thumbnail_source"])
 
     if updates:
+        # The settings form posts every field; only a real change to a
+        # vault-wide one (not a personal view setting) needs an admin.
+        if config.shared_setting_changes(vault_root, updates):
+            err = _require_admin("change vault-wide settings such as the accent color or compression")
+            if err:
+                return err
         config.save_vault_settings(vault_root, updates)
 
     return web.json_response({
@@ -390,6 +505,9 @@ async def post_initialize(request):
     ok, err = config.validate_vault_root(vault_root)
     if not ok:
         return _error(err)
+    problem = config.check_set_vault_root(vault_root)
+    if problem:
+        return _error(problem, 403)
     async with _write_lock(vault_root):
         config.initialize_vault(vault_root)
         config.set_vault_root(vault_root)
@@ -502,10 +620,16 @@ async def post_create_entry(request):
         example["input_files"] = _collect_indexed_files(files, f"example_{i}_input_", example.get("input_labels"))
         example["output_files"] = _collect_indexed_files(files, f"example_{i}_output_", example.get("output_labels"))
 
+    # Studio mode: a favorite is the saving artist's own, not the entry's.
+    favorite = bool(data.pop("favorite", False)) if studio.enabled() else None
+
     async with _write_lock(vault_root):
         entry, err_msg = entries.create_entry(vault_root, data)
         if err_msg:
             return _error(err_msg)
+        if favorite:
+            prefs.set_favorite(vault_root, entry["id"], True)
+            entry["favorite"] = True
         return web.json_response(entry)
 
 
@@ -520,10 +644,21 @@ async def post_entry_metadata(request):
         data, files = await _parse_multipart(request)
     except _MultipartError as e:
         return _error(str(e))
+    base_updated_at = data.pop("base_updated_at", None)
     async with _write_lock(vault_root):
         slug, manifest, err = _require_entry(vault_root, entry_id)
         if err:
             return err
+        conflict = _edit_conflict(manifest, base_updated_at)
+        if conflict:
+            return conflict
+        if studio.enabled() and "favorite" in data:
+            prefs.set_favorite(vault_root, entry_id, bool(data.pop("favorite")))
+            # Starring alone touches nothing shared (and must not bump
+            # "last updated" for everyone else).
+            data.pop("file_mtimes", None)
+            if not data and not files:
+                return web.json_response(storage.build_entry_state(vault_root, slug))
         new_slug, err_msg, warnings = entries.update_entry_metadata(
             vault_root, manifest, slug, data, files.get("thumbnail"), files.get("thumbnail_source"),
             compare_image_file=files.get("compare_image"),
@@ -535,6 +670,26 @@ async def post_entry_metadata(request):
         if warnings:
             state["warnings"] = warnings
         return web.json_response(state)
+
+
+def _edit_conflict(manifest, base_updated_at):
+    """409 when someone else changed the entry after the editor opened it, so
+    saving the form would silently undo their change. The UI sends the
+    updated_at it rendered as base_updated_at; edits by the same artist
+    never count as a conflict."""
+    current = manifest.get("updated_at")
+    if not base_updated_at or not current or base_updated_at == current:
+        return None
+    who = manifest.get("updated_by")
+    if who and who == studio.current_user():
+        return None
+    by = f" by {who}" if who else ""
+    return web.json_response({
+        "error": (f"“{manifest.get('name')}” was changed{by} since you opened it. "
+                  "Copy anything you want to keep, reload the entry to see the latest version, "
+                  "then re-apply your edits."),
+        "conflict": True,
+    }, status=409)
 
 
 @_post("/workflow-vault/entries/{entry_id}/archive")
@@ -601,7 +756,10 @@ async def post_delete_entry(request):
         return err
 
     async with _write_lock(vault_root):
-        slug, _manifest, err = _require_entry(vault_root, entry_id)
+        slug, manifest, err = _require_entry(vault_root, entry_id)
+        if err:
+            return err
+        err = _require_can_delete("entries", manifest)
         if err:
             return err
         method, err_msg = await asyncio.to_thread(entries.delete_entry, vault_root, slug)
@@ -672,6 +830,9 @@ async def get_health(request):
 @_post("/workflow-vault/health/cleanup-staging")
 async def post_cleanup_staging(request):
     vault_root, err = _require_vault()
+    if err:
+        return err
+    err = _require_admin("clean up interrupted saves")
     if err:
         return err
     async with _write_lock(vault_root):
@@ -786,6 +947,9 @@ async def post_compress_examples(request):
         return err
     if not media.pillow_available():
         return _error("Image compression is unavailable (Pillow not installed).")
+    err = _require_admin("re-compress every image in the vault")
+    if err:
+        return err
     settings = config.load_vault_settings(vault_root)
     fmt = settings.get("example_compress_format", "webp")
     if fmt not in config.VALID_COMPRESS_FORMATS:
@@ -923,6 +1087,10 @@ async def post_delete_version(request):
 
     async with _write_lock(vault_root):
         slug, manifest, err = _require_entry(vault_root, entry_id)
+        if err:
+            return err
+        version = next((v for v in storage.list_versions(vault_root, slug) if v.get("id") == version_id), None)
+        err = _require_can_delete("versions", manifest, version)
         if err:
             return err
         _new_current, err_msg = versions.delete_version(vault_root, manifest, slug, version_id)
@@ -1142,6 +1310,9 @@ async def post_rename_tag(request):
     body, err = await _read_json(request)
     if err:
         return err
+    err = _require_admin("rename tags across the whole vault")
+    if err:
+        return err
     async with _write_lock(vault_root):
         count, err_msg = entries.rename_tag(vault_root, body.get("from"), body.get("to"))
         if err_msg:
@@ -1155,6 +1326,9 @@ async def post_delete_tag(request):
     if err:
         return err
     body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("delete tags across the whole vault")
     if err:
         return err
     async with _write_lock(vault_root):
@@ -1180,6 +1354,9 @@ async def post_convert_folders_to_tags(request):
         if err:
             return err
     allowed = body.get("tags") if isinstance(body.get("tags"), list) else None
+    err = _require_admin("convert legacy folders to tags")
+    if err:
+        return err
     async with _write_lock(vault_root):
         result = await asyncio.to_thread(entries.convert_folders_to_tags, vault_root, allowed)
         return web.json_response({"ok": True, **result, **_full_state(vault_root)})

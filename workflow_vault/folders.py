@@ -97,7 +97,7 @@ def delete_folder(vault_root, folder_id):
         manifest = storage.read_manifest(vault_root, slug)
         if manifest and manifest.get("folder_id") in to_delete:
             manifest["folder_id"] = None
-            manifest["updated_at"] = utils.now_iso()
+            utils.touch(manifest)
             storage.write_manifest(vault_root, slug, manifest)
 
     return True, None

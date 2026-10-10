@@ -1,6 +1,8 @@
 # --- Runtime / user-specific (never commit) ---
 # vault_config.json points at the user's vault root; per-machine.
 vault_config.json
+# studio_config.json is site-specific (see studio_config.example.json).
+studio_config.json
 
 # --- Python build cruft ---
 __pycache__/
@@ -13,8 +15,8 @@ __pycache__/
 # --- Build artifacts / archives ---
 *.zip
 
-# --- Local-only: kept on disk for development, not published ---
-tests/
+# Tests are versioned in this fork (still excluded from the registry
+# package by .comfyignore).
 
 # --- Standalone app build (not part of the published node) ---
 standalone_app/

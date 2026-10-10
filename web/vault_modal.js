@@ -10,7 +10,8 @@ import { renderProfileSwitcher } from "./vault_profiles.js";
 import { showShortcutsDialog } from "./vault_shortcuts.js";
 
 // App version (SemVer). Keep in sync with pyproject.toml; shown in the footer.
-export const VAULT_VERSION = "1.9.1";
+// This is the studio (multi-user) fork; the original is credited below.
+export const VAULT_VERSION = "1.9.1-studio.1";
 export const AUTHOR_NAME = "Alex Villabón";
 export const AUTHOR_URL = "https://www.youtube.com/@alexvillabon";
 export const REPO_URL = "https://github.com/avillabon/ComfyUI_Workflow_Vault";
@@ -90,7 +91,26 @@ export function renderLoading() {
   ]);
 }
 
+// Studio mode: the vault folder comes from the studio configuration, so there
+// is nothing for the artist to pick. Explain what's wrong instead.
+function renderStudioProblem(controller) {
+  const wrap = el("div", { className: "wv-init" });
+  wrap.appendChild(el("h2", {}, ["The studio vault isn't available"]));
+  wrap.appendChild(el("p", { className: "wv-init-status" }, [controller.state.studio_error]));
+  wrap.appendChild(
+    el("p", { className: "wv-init-hint" }, [
+      "This ComfyUI is set up to use your studio's shared Workflow Vault",
+      controller.state.studio?.config_path ? ` (configured in ${controller.state.studio.config_path})` : "",
+      ". Once the problem is fixed, try again.",
+    ])
+  );
+  const retry = el("button", { className: "wv-btn wv-btn-primary", onclick: () => controller.refresh() }, [el("i", { className: "pi pi-refresh" }), " Try again"]);
+  wrap.appendChild(el("div", { className: "wv-init-actions" }, [retry]));
+  return wrap;
+}
+
 export function renderInitView(controller) {
+  if (controller.state?.studio_error) return renderStudioProblem(controller);
   const wrap = el("div", { className: "wv-init" });
 
   wrap.appendChild(el("h2", {}, ["Welcome to the Workflow Vault"]));
@@ -385,12 +405,12 @@ export function renderGridBody(controller) {
   return body;
 }
 
-// Bottom-of-sidebar credit: version, author link, and repo link (new tab).
+// Bottom-of-sidebar credit: version, original author link, and upstream repo link (new tab).
 function renderSidebarFooter() {
   const footerLink = (href, children) =>
     el("a", { className: "wv-sidebar-footer-link", href, target: "_blank", rel: "noopener noreferrer" }, children);
   return el("div", { className: "wv-sidebar-footer" }, [
-    el("div", { className: "wv-sidebar-footer-version" }, [`Workflow Vault v${VAULT_VERSION}`]),
+    el("div", { className: "wv-sidebar-footer-version" }, [`Workflow Vault Studio v${VAULT_VERSION}`]),
     el("div", { className: "wv-sidebar-footer-links" }, [
       footerLink(AUTHOR_URL, [`by ${AUTHOR_NAME} `, el("i", { className: "pi pi-external-link" })]),
       footerLink(REPO_URL, [el("i", { className: "pi pi-github" }), "GitHub"]),
@@ -822,7 +842,10 @@ function renderCard(entry, controller) {
   }
   if (show("date")) {
     footerItems.push(
-      el("span", { className: "wv-card-footer-item" }, [el("i", { className: "pi pi-clock" }), formatDateOnly(entry.updated_at)])
+      el("span", { className: "wv-card-footer-item", title: entry.updated_by ? `Last updated by ${entry.updated_by}` : "" }, [
+        el("i", { className: "pi pi-clock" }),
+        formatDateOnly(entry.updated_at),
+      ])
     );
   }
   if (footerItems.length) {

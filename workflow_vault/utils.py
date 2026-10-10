@@ -4,11 +4,122 @@ file writes, and path-safety checks."""
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
+
+from . import studio
+
+
+def _read_umask():
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
+
+
+# Read once at import (single-threaded startup): os.umask can only be read by
+# setting it, which would race with other threads later on.
+_UMASK = _read_umask()
+
+
+# ---------------------------------------------------------------------------
+# Shared-folder permissions
+# ---------------------------------------------------------------------------
+#
+# tempfile.mkstemp (behind every atomic write) creates files 0600 whatever the
+# umask, and that alone made a vault on a shared folder unusable: whoever saved
+# an entry was the only person who could read it. New files now get normal
+# permissions (0666 minus the umask), and in studio mode the studio's group and
+# group-writable modes, so every artist can read, version, and delete them.
+
+def new_file_mode(shared=True):
+    cfg = studio.load() if shared else None
+    return cfg["file_mode"] if cfg else 0o666 & ~_UMASK
+
+
+def _studio_gid(shared):
+    cfg = studio.load() if shared else None
+    return cfg["gid"] if cfg else None
+
+
+def share_path(path):
+    """Give a file or folder the studio's group and permissions. A no-op
+    outside studio mode, on Windows, and for paths owned by someone else (only
+    the owner, or root, may change them). Never raises."""
+    cfg = studio.load()
+    if not cfg or os.name == "nt":
+        return
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return
+    if stat.S_ISLNK(st.st_mode):
+        return
+    euid = os.geteuid()
+    if euid != 0 and st.st_uid != euid:
+        return
+    if cfg["gid"] is not None and st.st_gid != cfg["gid"]:
+        try:
+            os.chown(path, -1, cfg["gid"])
+        except OSError:
+            pass
+    want = cfg["dir_mode"] if stat.S_ISDIR(st.st_mode) else cfg["file_mode"]
+    try:
+        # chown may have cleared setgid, so re-read rather than trust st_mode.
+        if stat.S_IMODE(os.lstat(path).st_mode) != want:
+            os.chmod(path, want)
+    except OSError:
+        pass
+
+
+def share_tree(root):
+    """share_path() for a folder and everything under it."""
+    if not studio.enabled():
+        return
+    share_path(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames + filenames:
+            share_path(os.path.join(dirpath, name))
+
+
+def makedirs(path, shared=True):
+    """os.makedirs(exist_ok=True), then give every folder it created the
+    studio's group and setgid permissions (os.makedirs' mode is filtered by the
+    umask, and can't set setgid at all)."""
+    path = os.path.abspath(path)
+    created = []
+    probe = path
+    while not os.path.isdir(probe):
+        created.append(probe)
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    os.makedirs(path, exist_ok=True)
+    if shared:
+        for d in reversed(created):
+            share_path(d)
+
+
+def _prepare_temp_file(fd, shared):
+    """Fix the 0600 that mkstemp forces on every new file."""
+    if os.name == "nt":
+        return
+    gid = _studio_gid(shared)
+    if gid is not None:
+        try:
+            os.fchown(fd, -1, gid)
+        except OSError:
+            pass
+    try:
+        os.fchmod(fd, new_file_mode(shared))
+    except OSError:
+        # Some network mounts (e.g. CIFS without Unix extensions) refuse
+        # chmod; their permissions come from the server, so carry on.
+        pass
 
 
 def open_in_file_manager(path):
@@ -221,20 +332,62 @@ def _set_windows_creation_time(path, ctime):
         pass
 
 
+def _uses_vault_trash():
+    cfg = studio.load()
+    return bool(cfg and cfg["trash"] == "vault")
+
+
 def trash_label():
-    """The user-facing name of the OS trash, for UI copy."""
+    """The user-facing name of where deletes go, for UI copy."""
+    if _uses_vault_trash():
+        return studio.trash_label()
     if sys.platform.startswith("win"):
         return "Recycle Bin"
     return "Trash"
 
 
-def send_to_trash(path):
-    """Delete a file/folder, preferring the OS trash so the delete is
-    recoverable. Returns "trash" if it reached the trash, or "permanent" if no
-    trash mechanism was available on this platform and it was removed for good
-    instead. Raises OSError if the path can't be removed at all.
+def _move_to_vault_trash(vault_root, path):
+    """Move a path into <vault>/.trash/<when>_<who>_<id>/, keeping its path
+    relative to the vault so restoring is a move back. A trash_info.json beside
+    it records what it was and who deleted it.
 
-    Trash support is best-effort and dependency-free, per platform:
+    On a shared vault the deleting artist's personal OS trash is the wrong
+    place: colleagues can't see it, and network mounts often have none (which
+    used to turn every delete permanent)."""
+    rel = os.path.relpath(path, vault_root)
+    user = studio.current_user()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    item_id = f"{stamp}_{re.sub(r'[^A-Za-z0-9._-]', '_', user)}_{uuid.uuid4().hex[:6]}"
+    item_root = os.path.join(vault_root, studio.TRASH_DIRNAME, item_id)
+    dest = os.path.join(item_root, rel)
+    makedirs(os.path.dirname(dest))
+    try:
+        atomic_write_json(os.path.join(item_root, "trash_info.json"), {
+            "original_path": rel.replace("\\", "/"),
+            "deleted_by": user,
+            "deleted_at": now_iso(),
+        })
+        os.rename(path, dest)
+    except OSError:
+        import shutil
+
+        shutil.rmtree(item_root, ignore_errors=True)
+        raise
+    return item_id
+
+
+def send_to_trash(path, vault_root=None):
+    """Delete a file/folder, preferring a trash so the delete is recoverable.
+    Returns "vault_trash" (studio mode: moved into the vault's shared .trash),
+    "trash" if it reached the OS trash, or "permanent" if no trash mechanism
+    was available on this platform and it was removed for good instead. Raises
+    OSError if the path can't be removed at all.
+
+    In studio mode, a path inside `vault_root` always goes to the vault's own
+    trash and is never deleted permanently: if the move fails, so does the
+    delete.
+
+    OS trash support is best-effort and dependency-free, per platform:
       - Windows: SHFileOperationW          -> Recycle Bin
       - macOS:   Finder via osascript      -> Trash
       - Linux:   `gio trash` / `trash-put` -> XDG Trash
@@ -243,6 +396,10 @@ def send_to_trash(path):
     path = os.path.normpath(path)
     if not os.path.exists(path):
         raise OSError("Path not found.")
+
+    if vault_root and _uses_vault_trash() and is_path_inside(vault_root, path):
+        _move_to_vault_trash(vault_root, path)
+        return "vault_trash"
 
     if _move_to_trash(path):
         return "trash"
@@ -370,6 +527,26 @@ def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def stamp_created(record, now=None):
+    """Set created/updated time and author on a new manifest, version, or
+    example. Returns the timestamp used."""
+    now = now or now_iso()
+    user = studio.current_user()
+    record["created_at"] = now
+    record["created_by"] = user
+    record["updated_at"] = now
+    record["updated_by"] = user
+    return now
+
+
+def touch(record, now=None):
+    """Mark a record as just changed, and by whom. Returns the timestamp."""
+    now = now or now_iso()
+    record["updated_at"] = now
+    record["updated_by"] = studio.current_user()
+    return now
+
+
 def generate_id(prefix):
     return f"{prefix}_{uuid.uuid4().hex[:20].upper()}"
 
@@ -393,11 +570,14 @@ def unique_slug(base_slug, existing_slugs):
     return f"{base_slug}_{i}"
 
 
-def atomic_write_text(path, text, encoding="utf-8"):
+def atomic_write_text(path, text, encoding="utf-8", shared=True):
+    """Write via a temp file + rename so readers never see a partial file.
+    `shared=False` is for per-user files outside the vault (no studio group)."""
     directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    makedirs(directory, shared=shared)
     fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", dir=directory)
     try:
+        _prepare_temp_file(fd, shared)
         with os.fdopen(fd, "w", encoding=encoding, newline="\n") as f:
             f.write(text)
             f.flush()
@@ -409,15 +589,16 @@ def atomic_write_text(path, text, encoding="utf-8"):
         raise
 
 
-def atomic_write_json(path, data):
-    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
+def atomic_write_json(path, data, shared=True):
+    atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), shared=shared)
 
 
 def atomic_write_bytes(path, data):
     directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    makedirs(directory)
     fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", dir=directory)
     try:
+        _prepare_temp_file(fd, True)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
