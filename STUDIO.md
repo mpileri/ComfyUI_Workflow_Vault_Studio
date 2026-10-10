@@ -37,8 +37,10 @@ sudo usermod -aG comfyusers alice      # for each artist; they must log in again
 
 ### 2. Install the extension
 
-Clone this fork into `ComfyUI/custom_nodes/` on every workstation, or once in a
-shared ComfyUI install. Requirements are the same as upstream.
+Clone https://github.com/mpileri/ComfyUI_Workflow_Vault_Studio into
+`ComfyUI/custom_nodes/` on every workstation (or once in a shared ComfyUI
+install) and install its requirements, as described in the README. Remove the
+original Workflow Vault first if it's installed: the two can't run side by side.
 
 ### 3. The studio config
 
@@ -73,7 +75,7 @@ export WORKFLOW_VAULT_GROUP=comfyusers
 ### 4. Create the vault folder
 
 ```bash
-cd ComfyUI/custom_nodes/ComfyUI_Workflow_Vault
+cd ComfyUI/custom_nodes/ComfyUI_Workflow_Vault_Studio
 python vault_admin.py init        # creates the folder with the right group and setgid
 python vault_admin.py status      # shows the config and each vault's state
 ```

@@ -54,17 +54,27 @@ folder you choose on disk. No database, no account, no cloud sync.
 
 ## Installation
 
-### ComfyUI Manager (recommended)
+> **Studio edition:** searching for "Workflow Vault" in ComfyUI Manager
+> installs the original single-user extension, not this one, so install this
+> edition from Git. If the original is already installed, uninstall it first:
+> the two can't run side by side. Your vault folders and saved workflows are
+> not affected, since they live outside the extension.
 
-1. Open **ComfyUI Manager → Custom Nodes Manager** (the "Manager" button, then
-   "Custom Nodes Manager" / "Install Custom Nodes").
-2. Search for **Workflow Vault** and click **Install**.
+### From Git (recommended)
+
+1. In your ComfyUI `custom_nodes` folder, run
+   `git clone https://github.com/mpileri/ComfyUI_Workflow_Vault_Studio.git`
+2. Install its requirements with the Python that runs ComfyUI:
+   `python -m pip install -r ComfyUI_Workflow_Vault_Studio/requirements.txt`
 3. Restart ComfyUI.
+
+To update later, run `git pull` in that folder and restart ComfyUI. ComfyUI
+Manager's **Install via Git URL** works too, with the same URL.
 
 ### Manual
 
-1. Copy (or clone) this folder into your ComfyUI `custom_nodes` directory, so
-   you end up with `ComfyUI/custom_nodes/ComfyUI_Workflow_Vault/`.
+1. Copy this folder into your ComfyUI `custom_nodes` directory, so you end up
+   with `ComfyUI/custom_nodes/ComfyUI_Workflow_Vault_Studio/`.
 2. Restart ComfyUI.
 
 ### Dependencies

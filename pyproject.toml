@@ -11,8 +11,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/avillabon/ComfyUI_Workflow_Vault"
-"Bug Tracker" = "https://github.com/avillabon/ComfyUI_Workflow_Vault/issues"
+Repository = "https://github.com/mpileri/ComfyUI_Workflow_Vault_Studio"
+Original = "https://github.com/avillabon/ComfyUI_Workflow_Vault"
 
 [tool.comfy]
 # PublisherId is the @handle from your registry.comfy.org profile (public — NOT

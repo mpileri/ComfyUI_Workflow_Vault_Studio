@@ -25,7 +25,7 @@ import { showShortcutsDialog } from "./vault_shortcuts.js";
 export const VAULT_VERSION = "1.9.1-studio.1";
 export const AUTHOR_NAME = "Alex Villabón";
 export const AUTHOR_URL = "https://www.youtube.com/@alexvillabon";
-export const REPO_URL = "https://github.com/avillabon/ComfyUI_Workflow_Vault";
+export const REPO_URL = "https://github.com/mpileri/ComfyUI_Workflow_Vault_Studio";
 
 export const STATUS_LABELS = {
   draft: "Draft",
@@ -463,7 +463,7 @@ function renderSidebarFooter() {
   return el("div", { className: "wv-sidebar-footer" }, [
     el("div", { className: "wv-sidebar-footer-version" }, [`Workflow Vault Studio v${VAULT_VERSION}`]),
     el("div", { className: "wv-sidebar-footer-links" }, [
-      footerLink(AUTHOR_URL, [`by ${AUTHOR_NAME} `, el("i", { className: "pi pi-external-link" })]),
+      footerLink(AUTHOR_URL, [`original by ${AUTHOR_NAME} `, el("i", { className: "pi pi-external-link" })]),
       footerLink(REPO_URL, [el("i", { className: "pi pi-github" }), "GitHub"]),
     ]),
   ]);
