@@ -420,6 +420,13 @@ function renderEntryMetadataForm(controller, entry) {
 
   const leftCol = el("div", { className: "wv-settings-form-col" });
   leftCol.appendChild(formRow("Name", nameInput));
+  if (entry.naming) {
+    leftCol.appendChild(
+      el("div", { className: "wv-radio-desc wv-naming-hint" }, [
+        `Named by the project convention (${entry.naming.discipline}, ${entry.naming.variant}): it follows new versions and moves. Editing the name here turns that off.`,
+      ])
+    );
+  }
   if (showLocation) leftCol.appendChild(formRow("Location", locationPicker));
   leftCol.appendChild(formRow("Description", descInput));
   leftCol.appendChild(formRow("Status", statusSelect));

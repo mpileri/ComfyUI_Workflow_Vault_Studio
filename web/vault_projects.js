@@ -79,9 +79,25 @@ function levelOf(ctx) {
   return aid ? "asset" : shid ? "shot" : sid ? "sequence" : "project";
 }
 
-export function contextLabel(state, ctx) {
+export function contextCodes(state, ctx) {
   const { project, sequence, shot, asset } = findContext(state, ctx);
-  return [project, sequence, shot, asset].filter(Boolean).map((i) => i.code).join(" › ") || "Library";
+  return [project, asset, sequence, shot].filter(Boolean).map((i) => i.code);
+}
+
+export function contextLabel(state, ctx) {
+  return contextCodes(state, ctx).join(" › ") || "Library";
+}
+
+// Parts of generated project names (mirrors entries.py on the server).
+export function cleanDiscipline(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30);
+}
+
+export function cleanVariant(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const m = text.match(/^v?(\d{1,4})$/);
+  if (m) return `v${String(Number(m[1])).padStart(2, "0")}`;
+  return text.replace(/[^a-z0-9]+/g, "").slice(0, 10) || "v01";
 }
 
 // --- Library folders --------------------------------------------------------
@@ -706,7 +722,8 @@ async function syncShotGridAction(controller) {
 // sequence, then a shot. Takes a scope-like value ({folder_id} or a project
 // context). getContext() is the project location (null for the Library) and
 // getFolder() the Library folder (null at the root or in a project).
-export function renderContextPicker(state, value, { onChange } = {}) {
+// `restrict`: "library" shows only the folder select, "project" only projects.
+export function renderContextPicker(state, value, { onChange, restrict = null } = {}) {
   const wrap = el("div", { className: "wv-context-picker" });
   const placeSel = el("select", { className: "wv-input", "aria-label": "Library or project" });
   const midSel = el("select", { className: "wv-input", "aria-label": "Folder, asset or sequence" });
@@ -721,6 +738,11 @@ export function renderContextPicker(state, value, { onChange } = {}) {
   } else if (value?.folder_id && folderExists(state, value.folder_id)) {
     current.mid = `f:${value.folder_id}`;
   }
+  if (restrict === "library") Object.assign(current, { project_id: "", mid: current.mid.startsWith("f:") ? current.mid : "", shot_id: "" });
+  if (restrict === "project" && !current.project_id) {
+    const first = (state.projects || []).find((p) => !p.archived);
+    Object.assign(current, { project_id: first ? first.id : "", mid: "", shot_id: "" });
+  }
 
   // Archived places can't be picked, except the one already chosen.
   const pickable = (item, selected) => !item.archived || item.id === selected;
@@ -728,8 +750,9 @@ export function renderContextPicker(state, value, { onChange } = {}) {
 
   function fill() {
     const project = (state.projects || []).find((p) => p.id === current.project_id) || null;
+    placeSel.style.display = restrict === "library" ? "none" : "";
     placeSel.replaceChildren(
-      option("", "Library", !project),
+      ...(restrict === "project" ? [] : [option("", "Library", !project)]),
       ...(state.projects || [])
         .filter((p) => pickable(p, current.project_id))
         .map((p) => option(p.id, p.name ? `${p.code} — ${p.name}` : p.code, p.id === current.project_id))

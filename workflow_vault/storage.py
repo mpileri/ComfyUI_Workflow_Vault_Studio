@@ -326,6 +326,7 @@ def _read_entry_state(vault_root, slug):
         "compare_image_source": manifest.get("compare_image_source"),
         "folder_id": manifest.get("folder_id"),
         "context": manifest.get("context") or None,
+        "naming": manifest.get("naming") or None,
         "current_version_id": manifest.get("current_version_id"),
         "created_at": manifest.get("created_at"),
         "created_by": manifest.get("created_by"),

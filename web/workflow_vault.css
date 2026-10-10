@@ -4920,3 +4920,28 @@
 .wv-tree-toggle-spacer {
   cursor: default;
 }
+
+/* Save wizard: Library | Project and generated project names */
+
+.wv-save-mode {
+  align-self: flex-start;
+}
+
+.wv-naming-fields {
+  display: grid;
+  grid-template-columns: 1fr 96px;
+  gap: 10px;
+}
+
+.wv-generated-name {
+  padding: 8px 10px;
+  border: 1px dashed var(--wv-border);
+  border-radius: var(--wv-radius);
+  background: var(--wv-bg-alt);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+
+.wv-naming-hint {
+  margin: -6px 0 10px;
+}

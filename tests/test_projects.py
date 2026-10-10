@@ -247,6 +247,73 @@ class LibraryFoldersTest(ProjectsTestCase):
         await self.save_in_folder("Despill", cleanup)
 
 
+class NamingTest(ProjectsTestCase):
+    """PRJ_SEQ_SHOT_discipline_v01_v001_login names for project workflows."""
+
+    async def save_named(self, context, discipline="comp", variant="v01", status=200):
+        return await self.post_form("/workflow-vault/entries", {
+            "name": "ignored", "workflow": WORKFLOW, "context": context,
+            "naming": {"discipline": discipline, "variant": variant}}, status=status)
+
+    async def test_name_follows_place_version_and_author(self):
+        pid, sid, shots = await self.make_structure()
+        sh10 = {"project_id": pid, "sequence_id": sid, "shot_id": shots["SH0010"]}
+        entry = await self.save_named(sh10)
+        self.assertEqual(entry["name"], "DEMO_SQ010_SH0010_comp_v01_v001_alice")
+        self.assertEqual(entry["slug"], "demo_sq010_sh0010_comp_v01")
+
+        self.as_user("bob")  # a new version by someone else
+        state = await self.post(f"/workflow-vault/entries/{entry['id']}/versions", {"workflow": WORKFLOW})
+        self.assertEqual(state["name"], "DEMO_SQ010_SH0010_comp_v01_v002_bob")
+        self.assertEqual(state["slug"], "demo_sq010_sh0010_comp_v01")  # the folder stays put
+        v001 = next(v for v in state["versions"] if v["label"] == "v001")
+        state = await self.post(f"/workflow-vault/entries/{entry['id']}/versions/{v001['id']}/promote")
+        self.assertEqual(state["name"], "DEMO_SQ010_SH0010_comp_v01_v001_alice")
+
+        # Copying into another shot names the copy for that shot, v001, the copier.
+        body = await self.post(f"/workflow-vault/entries/{entry['id']}/copy-to", {"targets": [
+            {"project_id": pid, "sequence_id": sid, "shot_id": shots["SH0020"]}]})
+        self.assertEqual(len(body["copied"]), 1)
+        state = await self.get("/workflow-vault/state")
+        names = sorted(e["name"] for e in state["entries"])
+        self.assertIn("DEMO_SQ010_SH0020_comp_v01_v001_bob", names)
+
+        # Moving it renames it with the new codes.
+        sh30 = {"project_id": pid, "sequence_id": sid, "shot_id": shots["SH0030"]}
+        state = await self.post_form(f"/workflow-vault/entries/{entry['id']}/metadata", {"context": sh30})
+        self.assertEqual(state["name"], "DEMO_SQ010_SH0030_comp_v01_v001_alice")
+
+        # A rename by hand switches the convention off.
+        state = await self.post_form(f"/workflow-vault/entries/{entry['id']}/metadata", {"name": "my comp setup"})
+        self.assertEqual(state["name"], "my comp setup")
+        self.assertIsNone(state["naming"])
+        state = await self.post(f"/workflow-vault/entries/{entry['id']}/versions", {"workflow": WORKFLOW})
+        self.assertEqual(state["name"], "my comp setup")
+
+    async def test_parts_are_cleaned_and_custom_disciplines_remembered(self):
+        pid, sid, shots = await self.make_structure()
+        entry = await self.save_named({"project_id": pid}, discipline="Match Move", variant="3")
+        self.assertEqual(entry["name"], "DEMO_match-move_v03_v001_alice")
+        state = await self.get("/workflow-vault/state")
+        self.assertIn("comp", state["disciplines"])
+        self.assertIn("match-move", state["disciplines"])
+        await self.save_named({"project_id": pid}, discipline="  ", status=400)
+        # Same convention twice in one place is refused like any duplicate name.
+        await self.save_named({"project_id": pid}, discipline="match move", variant="v03", status=400)
+
+    async def test_assets_and_library(self):
+        pid, sid, shots = await self.make_structure()
+        body = await self.post(f"/workflow-vault/projects/{pid}/assets", {"codes": "hero_char"})
+        asset = body["created"][0]["id"]
+        entry = await self.save_named({"project_id": pid, "asset_id": asset}, discipline="lookdev")
+        self.assertEqual(entry["name"], "DEMO_hero_char_lookdev_v01_v001_alice")
+        # The convention is for project places only; the library keeps free names.
+        lib = await self.post_form("/workflow-vault/entries", {
+            "name": "Upscale 4x", "workflow": WORKFLOW, "naming": {"discipline": "comp"}})
+        self.assertEqual(lib["name"], "Upscale 4x")
+        self.assertIsNone(lib["naming"])
+
+
 class FakeShotgun:
     """Just enough of shotgun_api3.Shotgun for fetch()."""
     data = {}

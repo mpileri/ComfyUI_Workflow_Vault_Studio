@@ -362,6 +362,9 @@ def _full_state(vault_root):
     state["vault_root"] = vault_root
     state["initialized"] = True
     state["projects"] = projects.load(vault_root)["projects"]
+    custom = [d for d in (config.load_vault_settings(vault_root).get("disciplines") or [])
+                                  if isinstance(d, str) and d not in entries.DEFAULT_DISCIPLINES]
+    state["disciplines"] = list(entries.DEFAULT_DISCIPLINES) + sorted(custom)
     state["current_user"] = studio.current_user()
     sg_ok, sg_reason = shotgrid.status()
     state["shotgrid"] = {"available": sg_ok, "reason": sg_reason}
@@ -725,6 +728,8 @@ async def post_create_entry(request):
         entry, err_msg = entries.create_entry(vault_root, data, context=context, codes=codes, folder_id=folder_id)
         if err_msg:
             return _error(err_msg)
+        if entry.get("naming"):
+            config.remember_discipline(vault_root, entry["naming"]["discipline"], entries.DEFAULT_DISCIPLINES)
         if favorite:
             prefs.set_favorite(vault_root, entry["id"], True)
             entry["favorite"] = True
@@ -1148,6 +1153,7 @@ async def post_create_version(request):
         )
         if err_msg:
             return _error(err_msg)
+        entries.refresh_generated_name(vault_root, slug, manifest)
         storage.write_manifest(vault_root, slug, manifest)
         return web.json_response(storage.build_entry_state(vault_root, slug))
 
@@ -1196,6 +1202,7 @@ async def post_promote_version(request):
         version, err_msg = versions.promote_version(vault_root, manifest, slug, version_id)
         if err_msg:
             return _error(err_msg)
+        entries.refresh_generated_name(vault_root, slug, manifest)
         storage.write_manifest(vault_root, slug, manifest)
         return web.json_response(storage.build_entry_state(vault_root, slug))
 
@@ -1247,6 +1254,7 @@ async def post_delete_version(request):
         _new_current, err_msg = versions.delete_version(vault_root, manifest, slug, version_id)
         if err_msg:
             return _error(err_msg)
+        entries.refresh_generated_name(vault_root, slug, manifest)
         storage.write_manifest(vault_root, slug, manifest)
         return web.json_response(storage.build_entry_state(vault_root, slug))
 

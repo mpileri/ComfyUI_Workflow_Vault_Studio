@@ -41,6 +41,9 @@ DEFAULT_VAULT_SETTINGS = {
     # Re-encode the archival full-resolution thumbnail source to WebP (keeps
     # full resolution and the embedded ComfyUI workflow; just smaller on disk).
     "compress_thumbnail_source": True,
+    # Disciplines artists typed in for generated names, offered to everyone
+    # after the built-in ones (entries.DEFAULT_DISCIPLINES).
+    "disciplines": [],
     # Which optional fields appear on grid cards (cosmetic only).
     "card_fields": {
         "description": True,
@@ -414,6 +417,19 @@ def load_vault_settings(vault_root):
         card_fields.update({k: bool(v) for k, v in stored.items() if k in CARD_FIELD_KEYS})
     merged["card_fields"] = card_fields
     return merged
+
+
+def remember_discipline(vault_root, discipline, defaults=()):
+    """Add a custom discipline to the vault's list (no admin needed: it's
+    only a suggestion list)."""
+    if not discipline or discipline in defaults:
+        return
+    stored = _shared_settings(vault_root)
+    known = stored.get("disciplines") if isinstance(stored.get("disciplines"), list) else []
+    if discipline in known:
+        return
+    stored["disciplines"] = sorted({*known, discipline})
+    utils.atomic_write_json(os.path.join(vault_root, "vault_settings.json"), stored)
 
 
 def shared_setting_changes(vault_root, updates):

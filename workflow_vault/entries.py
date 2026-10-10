@@ -1,12 +1,13 @@
 """Vault entry creation and metadata editing."""
 
 import os
+import re
 import shutil
 
 from . import config
 from . import examples as examples_mod
 from . import media as media_mod
-from . import projects, storage, utils, versions
+from . import projects, storage, studio, utils, versions
 
 VALID_STATUSES = {"draft", "experimental", "stable", "production", "archived"}
 VALID_GENERATION_TYPES = {"image", "video", "audio", "3d_model", "llm", "api_nodes"}
@@ -87,6 +88,82 @@ def _base_slug(name, codes):
     return utils.slugify(" ".join(list(codes or []) + [name]))
 
 
+# --- Generated names for project workflows ----------------------------------
+#
+# A workflow saved into a project can be named by the studio convention
+#
+#     <project>_<sequence>_<shot>_<discipline>_<v01>_<v001>_<login>
+#     (<project>_<asset>_... for an asset; <project>_... for the project itself)
+#
+# from manifest["naming"] = {"discipline", "variant"}. The codes come from
+# where the entry lives, "v01" is the artist's variant, and "v001" + login are
+# the current version's label and author, so the name follows the entry: a
+# new version, a promoted version, a move or a copy into another shot all
+# rename it. Renaming it by hand turns the convention off for that entry.
+
+DEFAULT_DISCIPLINES = ("comp", "roto", "paint", "fx", "lighting", "lookdev", "matchmove", "layout", "anim", "generic")
+
+
+def clean_discipline(value):
+    """"Match Move" -> "match-move": lower case, no spaces or underscores
+    (underscores separate the parts of a generated name)."""
+    return re.sub(r"[^a-z0-9-]+", "-", str(value or "").strip().lower()).strip("-")[:30]
+
+
+def clean_variant(value):
+    """"1", "v1", "V01" -> "v01"; anything else is kept as plain letters/digits."""
+    text = str(value or "").strip().lower()
+    m = re.fullmatch(r"v?(\d{1,4})", text)
+    if m:
+        return f"v{int(m.group(1)):02d}"
+    return re.sub(r"[^a-z0-9]+", "", text)[:10] or "v01"
+
+
+def normalize_naming(raw):
+    """Returns (naming or None, error)."""
+    if not raw:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, "Invalid naming."
+    discipline = clean_discipline(raw.get("discipline"))
+    if not discipline:
+        return None, "Choose a discipline (e.g. comp, fx, lighting)."
+    return {"discipline": discipline, "variant": clean_variant(raw.get("variant"))}, None
+
+
+def compose_name(codes, naming, label, author):
+    login = re.sub(r"\s+", "_", str(author or "").strip()) or "unknown"
+    return "_".join([*codes, naming["discipline"], naming["variant"], label or "v001", login])
+
+
+def _naming_slug(codes, naming):
+    """Folder name for a generated-name entry: without the version and login,
+    so it stays put while the name follows new versions."""
+    return utils.slugify(" ".join([*codes, naming["discipline"], naming["variant"]]))
+
+
+def _current_label_author(vault_root, slug, manifest):
+    found = storage.list_versions(vault_root, slug)
+    current = next((v for v in found if v.get("id") == manifest.get("current_version_id")), None)
+    current = current or (found[-1] if found else {})
+    return current.get("label") or "v001", current.get("created_by") or manifest.get("created_by") or studio.current_user()
+
+
+def refresh_generated_name(vault_root, slug, manifest):
+    """Bring a generated name up to date (after a new, promoted or deleted
+    version). Mutates the manifest; returns True if the name changed."""
+    naming = manifest.get("naming")
+    if not naming or not manifest.get("context"):
+        return False
+    codes = projects.context_codes(projects.load(vault_root), manifest["context"])
+    label, author = _current_label_author(vault_root, slug, manifest)
+    name = compose_name(codes, naming, label, author)
+    if name == manifest.get("name"):
+        return False
+    manifest["name"] = name
+    return True
+
+
 def _name_taken_message(context, codes):
     where = f" in {' › '.join(codes)}" if context else ""
     return f"An entry with this name already exists{where}."
@@ -99,10 +176,18 @@ def create_entry(vault_root, data, context=None, codes=None, folder_id=None):
     examples (list of {...}) each with optional input_files/output_files.
     `context` is a validated project location (None: the library) and
     `codes` its project/sequence/shot codes. `folder_id` (validated) files a
-    library entry into a library folder.
+    library entry into a library folder. `data["naming"]`
+    ({discipline, variant}) names a project entry by the studio convention
+    instead of `data["name"]`.
     Returns (entry_state, error).
     """
-    name = (data.get("name") or "").strip()
+    naming, err = normalize_naming(data.get("naming")) if context else (None, None)
+    if err:
+        return None, err
+    if naming:
+        name = compose_name(codes or [], naming, data.get("version_label") or "v001", studio.current_user())
+    else:
+        name = (data.get("name") or "").strip()
     if not name:
         return None, "Name is required."
 
@@ -123,7 +208,7 @@ def create_entry(vault_root, data, context=None, codes=None, folder_id=None):
         data["generation_types"] if "generation_types" in data else data.get("generation_type")
     )
 
-    base_slug = _base_slug(name, codes)
+    base_slug = _naming_slug(codes or [], naming) if naming else _base_slug(name, codes)
     slug = utils.unique_slug(base_slug, slugs)
     staging_slug = f"{storage.staging_entry_prefix()}{slug}_{utils.generate_id('stage')}"
 
@@ -154,6 +239,8 @@ def create_entry(vault_root, data, context=None, codes=None, folder_id=None):
         "context": context,
         "current_version_id": None,
     }
+    if naming:
+        manifest["naming"] = naming
     utils.stamp_created(manifest)
 
     # Best-effort media (archival originals, the compare overlay) must never
@@ -276,11 +363,24 @@ def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None,
         return slug, "Invalid status.", warnings
 
     moving = context is not _UNSET and projects.context_key(context) != projects.context_key(manifest.get("context"))
+    # A generated name stays generated unless it's renamed by hand, or the
+    # entry leaves its project for the library (no codes to build it from).
+    naming = manifest.get("naming")
+    if naming and "name" in data and (data["name"] or "").strip() != (manifest.get("name") or ""):
+        naming = None
+    target = context if moving else manifest.get("context")
+    if naming and not target:
+        naming = None
     if "name" in data or moving:
-        new_name = (data["name"] or "").strip() if "name" in data else (manifest.get("name") or "")
+        if codes is None:
+            codes = projects.context_codes(projects.load(vault_root), target)
+        if naming:
+            label, author = _current_label_author(vault_root, slug, manifest)
+            new_name = compose_name(codes, naming, label, author)
+        else:
+            new_name = (data["name"] or "").strip() if "name" in data else (manifest.get("name") or "")
         if not new_name:
             return slug, "Name is required.", warnings
-        target = context if moving else manifest.get("context")
         if moving or new_name.lower() != (manifest.get("name") or "").strip().lower():
             names, slugs = _all_names_and_slugs(vault_root, exclude_slug=slug, context=target)
             if new_name.lower() in names:
@@ -288,14 +388,16 @@ def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None,
             # The entry's own slug is not a collision — a new name that
             # slugifies back to the current slug keeps the folder as-is.
             slugs.discard(slug)
-            if codes is None:
-                codes = projects.context_codes(projects.load(vault_root), target)
-            base_slug = _base_slug(new_name, codes)
+            base_slug = _naming_slug(codes, naming) if naming else _base_slug(new_name, codes)
             new_slug = utils.unique_slug(base_slug, slugs) if base_slug in slugs else base_slug
         manifest["name"] = new_name
         manifest["slug"] = new_slug
         if moving:
             manifest["context"] = context
+    if naming:
+        manifest["naming"] = naming
+    else:
+        manifest.pop("naming", None)
 
     if "description" in data:
         manifest["description"] = data["description"] or ""
@@ -437,10 +539,16 @@ def duplicate_entry(vault_root, source_slug, new_name, context=_UNSET, codes=Non
         codes = None
     if codes is None:
         codes = projects.context_codes(projects.load(vault_root), context)
+    # A generated name is rebuilt for the copy's place: its codes, version
+    # v001, and whoever makes the copy.
+    naming = src_manifest.get("naming") if context else None
+    if naming:
+        new_name = compose_name(codes, naming, "v001", studio.current_user())
     names, slugs = _all_names_and_slugs(vault_root, context=context)
     if new_name.lower() in names:
         return None, _name_taken_message(context, codes)
-    new_slug = utils.unique_slug(_base_slug(new_name, codes), slugs)
+    base_slug = _naming_slug(codes, naming) if naming else _base_slug(new_name, codes)
+    new_slug = utils.unique_slug(base_slug, slugs)
 
     src_dir = storage.entry_dir(vault_root, source_slug)
     dst_dir = storage.entry_dir(vault_root, new_slug)
@@ -458,6 +566,10 @@ def duplicate_entry(vault_root, source_slug, new_name, context=_UNSET, codes=Non
     manifest["slug"] = new_slug
     manifest["name"] = new_name
     manifest["context"] = context
+    if naming:
+        manifest["naming"] = naming
+    else:
+        manifest.pop("naming", None)
     utils.stamp_created(manifest)
     # A copy kept in the library stays in the source's library folder; one
     # placed in a project has none.

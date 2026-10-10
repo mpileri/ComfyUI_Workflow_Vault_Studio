@@ -10,7 +10,7 @@ import { renderMediaPicker, convertFlaggedMedia } from "./vault_media_picker.js"
 import { renderNotesEditor } from "./vault_notes_editor.js";
 import { getCurrentWorkflowJSON, getWorkflowVaultOrigin, getCurrentWorkflowName } from "./vault_workflow.js";
 import { activeProfile } from "./vault_profiles.js";
-import { renderContextPicker, contextLabel, entryIsAt } from "./vault_projects.js";
+import { renderContextPicker, contextLabel, contextCodes, entryIsAt, cleanDiscipline, cleanVariant } from "./vault_projects.js";
 
 export function renderWizard(controller) {
   const wrap = el("div", { className: "wv-wizard" });
@@ -102,21 +102,32 @@ function withUserName(name, user) {
 }
 
 const ADD_NAME_PREF_KEY = "workflowVault.addMyNameToSaves";
+const LAST_DISCIPLINE_KEY = "workflowVault.lastDiscipline";
 
-function readAddNamePref() {
+// Per-browser conveniences. Private windows can refuse storage; the form
+// still works, it just doesn't remember.
+function readPref(key) {
   try {
-    return window.localStorage.getItem(ADD_NAME_PREF_KEY) === "1";
+    return window.localStorage.getItem(key);
   } catch {
-    return false;
+    return null;
   }
 }
 
-function writeAddNamePref(on) {
+function writePref(key, value) {
   try {
-    window.localStorage.setItem(ADD_NAME_PREF_KEY, on ? "1" : "0");
+    window.localStorage.setItem(key, value);
   } catch {
-    // Private windows can refuse storage; the switch still works for this save.
+    // ignore
   }
+}
+
+function readAddNamePref() {
+  return readPref(ADD_NAME_PREF_KEY) === "1";
+}
+
+function writeAddNamePref(on) {
+  writePref(ADD_NAME_PREF_KEY, on ? "1" : "0");
 }
 
 function formRow(label, input) {
@@ -176,12 +187,57 @@ function renderCreateForm(controller) {
   // Default the name to the current ComfyUI tab's name (blank if the tab is
   // unsaved/untitled). The user can overwrite it before saving.
   const nameInput = el("input", { className: "wv-input", type: "text", placeholder: "Workflow name", value: getCurrentWorkflowName() });
-  // Where it's saved: the Library, or a project / sequence / shot. Defaults to
-  // the place the grid was showing (or the one the wizard was opened for).
-  const user = controller.state.current_user || "";
-  const placesExist = (controller.state.projects || []).length > 0 || (controller.state.folders || []).length > 0;
+  // Where it's saved: the Library (a folder, any name) or a Project (a
+  // project, asset, sequence or shot, named by the studio convention).
+  // Defaults to the place the grid was showing (or the one the wizard was
+  // opened for).
+  const { state } = controller;
+  const user = state.current_user || "";
+  const hasProjects = (state.projects || []).some((p) => !p.archived);
+  const hasFolders = (state.folders || []).length > 0;
   const startContext = controller.wizardOptions && "context" in controller.wizardOptions ? controller.wizardOptions.context : controller.scope;
-  const locationPicker = renderContextPicker(controller.state, startContext, { onChange: () => markDirty() });
+  let saveMode = hasProjects && startContext?.project_id ? "project" : "library";
+  const libraryPicker = renderContextPicker(state, startContext?.project_id ? null : startContext, { restrict: "library", onChange: () => markDirty() });
+  const projectPicker = renderContextPicker(state, startContext?.project_id ? startContext : null, {
+    restrict: "project",
+    onChange: () => {
+      paintGeneratedName();
+      markDirty();
+    },
+  });
+
+  // Project names: <codes>_<discipline>_<v01>_<v001>_<login>. v001 and the
+  // login are the vault's: they follow each new version.
+  const disciplineInput = el("input", {
+    className: "wv-input",
+    type: "text",
+    list: "wv-discipline-options",
+    placeholder: "e.g. comp",
+    value: readPref(LAST_DISCIPLINE_KEY) || "",
+    "aria-label": "Discipline",
+  });
+  const disciplineOptions = el("datalist", { id: "wv-discipline-options" }, (state.disciplines || []).map((d) => el("option", { value: d })));
+  const variantInput = el("input", { className: "wv-input", type: "text", value: "v01", placeholder: "v01", "aria-label": "Variant (v01)" });
+  const generatedName = el("div", { className: "wv-generated-name wv-mono", "aria-live": "polite" });
+  const discErr = fieldErr();
+  const generatedNameText = () =>
+    [
+      ...contextCodes(state, projectPicker.getContext()),
+      cleanDiscipline(disciplineInput.value) || "discipline",
+      cleanVariant(variantInput.value),
+      "v001",
+      String(user || "login").trim().replace(/\s+/g, "_"),
+    ].join("_");
+  function paintGeneratedName() {
+    generatedName.textContent = generatedNameText();
+  }
+  for (const input of [disciplineInput, variantInput]) {
+    input.addEventListener("input", () => {
+      paintGeneratedName();
+      discErr.style.display = "none";
+      markDirty();
+    });
+  }
   // Optionally tag the name with who saved it, e.g. "comp_cleanup_j.doe", so
   // several artists can each keep their own copy in the same shot. The name is
   // the artist's ComfyUI login (or computer login), and the choice is
@@ -236,12 +292,60 @@ function renderCreateForm(controller) {
   tagInput.addEventListener("change", () => { tagErr.style.display = "none"; });
 
   const left = el("div", { className: "wv-wizard-left" });
-  if (placesExist || startContext) left.appendChild(formRow("Save to", locationPicker));
-  left.appendChild(reqRow("Name", nameInput, nameErr));
+
+  // Library | Project
+  const libraryPane = el("div", { className: "wv-save-pane" });
+  if (hasFolders) libraryPane.appendChild(formRow("Folder", libraryPicker));
+  libraryPane.appendChild(reqRow("Name", nameInput, nameErr));
   if (user) {
-    left.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch, namePreview]));
+    libraryPane.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch, namePreview]));
     paintNamePreview();
   }
+  const projectPane = el("div", { className: "wv-save-pane" });
+  projectPane.appendChild(formRow("Project · asset or sequence · shot", projectPicker));
+  projectPane.appendChild(
+    el("div", { className: "wv-naming-fields" }, [
+      el("div", { className: "wv-form-row" }, [
+        el("label", {}, ["Discipline", el("span", { className: "wv-required" }, [" *"])]),
+        disciplineInput,
+        disciplineOptions,
+        discErr,
+      ]),
+      el("div", { className: "wv-form-row" }, [el("label", {}, ["Variant"]), variantInput]),
+    ])
+  );
+  projectPane.appendChild(
+    el("div", { className: "wv-form-row" }, [
+      el("label", {}, ["Name"]),
+      generatedName,
+      el("div", { className: "wv-radio-desc" }, ["v001 and the login update by themselves with each new version."]),
+    ])
+  );
+  paintGeneratedName();
+
+  const paintMode = () => {
+    libraryPane.style.display = saveMode === "library" ? "" : "none";
+    projectPane.style.display = saveMode === "project" ? "" : "none";
+  };
+  if (hasProjects) {
+    const modeBtn = (mode, icon, label) => {
+      const btn = el("button", { type: "button", className: "wv-segmented-btn" }, [el("i", { className: icon }), ` ${label}`]);
+      btn.onclick = () => {
+        saveMode = mode;
+        for (const b of btn.parentElement.children) b.classList.toggle("wv-segmented-btn-active", b === btn);
+        paintMode();
+        markDirty();
+      };
+      if (saveMode === mode) btn.classList.add("wv-segmented-btn-active");
+      return btn;
+    };
+    left.appendChild(
+      formRow("Save to", el("div", { className: "wv-segmented wv-save-mode" }, [modeBtn("library", "pi pi-book", "Library"), modeBtn("project", "pi pi-briefcase", "Project")]))
+    );
+  }
+  left.appendChild(libraryPane);
+  left.appendChild(projectPane);
+  paintMode();
   left.appendChild(formRow("Description", descInput));
   left.appendChild(reqRow("Tags", tagInput, tagErr));
   left.appendChild(reqRow("Status", statusSelect, statusErr));
@@ -354,8 +458,10 @@ function renderCreateForm(controller) {
   async function saveNewEntry({ openAfterSave = true } = {}) {
     // Validate required fields, surfacing an inline error on each missing one
     // and jumping to the first so the user knows precisely what's needed.
+    const toProject = saveMode === "project";
     const checks = [
-      [nameErr, !nameInput.value.trim(), "Name is required.", nameInput],
+      [nameErr, !toProject && !nameInput.value.trim(), "Name is required.", nameInput],
+      [discErr, toProject && !cleanDiscipline(disciplineInput.value), "Choose a discipline.", disciplineInput],
       [tagErr, tagInput.getTags().length === 0, "Add at least one tag.", tagInput],
       [statusErr, !statusSelect.value, "Choose a status.", statusSelect],
       [genErr, genTypePicker.getSelected().length === 0, "Select at least one generation type.", genTypePicker],
@@ -373,7 +479,12 @@ function renderCreateForm(controller) {
       return false;
     }
     let name = nameInput.value.trim();
-    if (addNameSwitch.input.checked && user) name = withUserName(name, user);
+    if (toProject) {
+      name = generatedNameText();
+      writePref(LAST_DISCIPLINE_KEY, cleanDiscipline(disciplineInput.value));
+    } else if (addNameSwitch.input.checked && user) {
+      name = withUserName(name, user);
+    }
     const workflow = getCurrentWorkflowJSON();
     if (countNodes(workflow) === 0) {
       status.textContent = "The canvas is empty — add nodes before saving.";
@@ -397,8 +508,9 @@ function renderCreateForm(controller) {
         custom_label: customLabelInput.value.trim() || null,
         version_notes: versionNotesInput.value,
         notes: notesEditor.getNotes(),
-        context: locationPicker.getContext(),
-        folder_id: locationPicker.getFolder(),
+        context: toProject ? projectPicker.getContext() : null,
+        folder_id: toProject ? null : libraryPicker.getFolder(),
+        naming: toProject ? { discipline: disciplineInput.value, variant: variantInput.value } : null,
         workflow,
       };
 
