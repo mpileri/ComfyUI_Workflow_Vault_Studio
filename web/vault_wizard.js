@@ -10,7 +10,7 @@ import { renderMediaPicker, convertFlaggedMedia } from "./vault_media_picker.js"
 import { renderNotesEditor } from "./vault_notes_editor.js";
 import { getCurrentWorkflowJSON, getWorkflowVaultOrigin, getCurrentWorkflowName } from "./vault_workflow.js";
 import { activeProfile } from "./vault_profiles.js";
-import { renderContextPicker, contextLabel, sameContext } from "./vault_projects.js";
+import { renderContextPicker, contextLabel, entryIsAt } from "./vault_projects.js";
 
 export function renderWizard(controller) {
   const wrap = el("div", { className: "wv-wizard" });
@@ -179,7 +179,7 @@ function renderCreateForm(controller) {
   // Where it's saved: the Library, or a project / sequence / shot. Defaults to
   // the place the grid was showing (or the one the wizard was opened for).
   const user = controller.state.current_user || "";
-  const projectsExist = (controller.state.projects || []).length > 0;
+  const placesExist = (controller.state.projects || []).length > 0 || (controller.state.folders || []).length > 0;
   const startContext = controller.wizardOptions && "context" in controller.wizardOptions ? controller.wizardOptions.context : controller.scope;
   const locationPicker = renderContextPicker(controller.state, startContext, { onChange: () => markDirty() });
   // Optionally tag the name with who saved it, e.g. "comp_cleanup_j.doe", so
@@ -236,7 +236,7 @@ function renderCreateForm(controller) {
   tagInput.addEventListener("change", () => { tagErr.style.display = "none"; });
 
   const left = el("div", { className: "wv-wizard-left" });
-  if (projectsExist || startContext) left.appendChild(formRow("Save to", locationPicker));
+  if (placesExist || startContext) left.appendChild(formRow("Save to", locationPicker));
   left.appendChild(reqRow("Name", nameInput, nameErr));
   if (user) {
     left.appendChild(el("div", { className: "wv-form-row wv-addname-row" }, [addNameSwitch, namePreview]));
@@ -398,6 +398,7 @@ function renderCreateForm(controller) {
         version_notes: versionNotesInput.value,
         notes: notesEditor.getNotes(),
         context: locationPicker.getContext(),
+        folder_id: locationPicker.getFolder(),
         workflow,
       };
 
@@ -526,7 +527,7 @@ function renderUpdateForm(controller) {
 
   // Workflows in the place the grid is showing come first, then the rest, each
   // most recently updated first.
-  const here = (e) => (sameContext(e.context, controller.scope) ? 0 : 1);
+  const here = (e) => (entryIsAt(controller.state, e, controller.scope) ? 0 : 1);
   const entries = [...(controller.state.entries || [])].sort(
     (a, b) => here(a) - here(b) || (b.updated_at || "").localeCompare(a.updated_at || "")
   );

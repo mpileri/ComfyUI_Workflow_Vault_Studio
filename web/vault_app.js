@@ -10,7 +10,7 @@ import { renderWizard } from "./vault_wizard.js";
 import { renderGlobalSettings } from "./vault_global_settings.js";
 import { readWindowSizeHint, saveWindowSizeHint, isWindowSize } from "./vault_window_size.js";
 import { isTypingTarget, showShortcutsDialog } from "./vault_shortcuts.js";
-import { normalizeScope } from "./vault_projects.js";
+import { normalizeScope, revealScope } from "./vault_projects.js";
 
 const DEFAULT_FILTERS = () => ({ search: "", status: null, favoritesOnly: false, showArchived: undefined, generationType: null, tags: [] });
 
@@ -418,7 +418,7 @@ export class VaultApp {
       this.selectedEntryId = null;
     }
     this.scope = normalizeScope(scope);
-    this.ui.scopeChildQuery = "";
+    revealScope(this, this.scope);
     this.ui.sidebarOpen = false;
     this.ui.animateEnter = true;
     this.render();

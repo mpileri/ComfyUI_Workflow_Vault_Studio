@@ -347,6 +347,16 @@ def _resolve_context(vault_root, raw):
     return context, projects.context_codes(registry, context), None
 
 
+def _resolve_folder(vault_root, folder_id):
+    """Validate a library folder id sent by the UI. Returns (folder_id or
+    None, error_response)."""
+    if not folder_id:
+        return None, None
+    if not any(f.get("id") == folder_id for f in storage.read_folders(vault_root)):
+        return None, _error("That library folder no longer exists.")
+    return folder_id, None
+
+
 def _full_state(vault_root):
     state = storage.build_state(vault_root)
     state["vault_root"] = vault_root
@@ -703,12 +713,16 @@ async def post_create_entry(request):
     # Studio mode: a favorite is the saving artist's own, not the entry's.
     favorite = bool(data.pop("favorite", False)) if studio.policy(vault_root) else None
     context_raw = data.pop("context", None)
+    folder_raw = data.pop("folder_id", None)
 
     async with _write_lock(vault_root):
         context, codes, err = _resolve_context(vault_root, context_raw)
         if err:
             return err
-        entry, err_msg = entries.create_entry(vault_root, data, context=context, codes=codes)
+        folder_id, err = _resolve_folder(vault_root, folder_raw)
+        if err:
+            return err
+        entry, err_msg = entries.create_entry(vault_root, data, context=context, codes=codes, folder_id=folder_id)
         if err_msg:
             return _error(err_msg)
         if favorite:
@@ -742,6 +756,11 @@ async def post_entry_metadata(request):
             if err:
                 return err
             move = {"context": context, "codes": codes}
+        if "folder_id" in data:
+            folder_id, err = _resolve_folder(vault_root, data.pop("folder_id"))
+            if err:
+                return err
+            move["folder_id"] = folder_id
         if studio.policy(vault_root) and "favorite" in data:
             prefs.set_favorite(vault_root, entry_id, bool(data.pop("favorite")))
             # Starring alone touches nothing shared (and must not bump
@@ -1386,6 +1405,9 @@ async def post_create_folder(request):
     body, err = await _read_json(request)
     if err:
         return err
+    err = _require_admin("create library folders")
+    if err:
+        return err
     async with _write_lock(vault_root):
         folder, err_msg = folders.create_folder(vault_root, body.get("name"), body.get("parent_id"))
         if err_msg:
@@ -1409,6 +1431,9 @@ async def post_update_folder(request):
     if "parent_id" in body:
         kwargs["parent_id"] = body["parent_id"]
 
+    err = _require_admin("change library folders")
+    if err:
+        return err
     async with _write_lock(vault_root):
         folder, err_msg = folders.update_folder(vault_root, folder_id, **kwargs)
         if err_msg:
@@ -1423,6 +1448,9 @@ async def post_delete_folder(request):
         return err
     folder_id = request.match_info["folder_id"]
 
+    err = _require_admin("delete library folders")
+    if err:
+        return err
     async with _write_lock(vault_root):
         ok, err_msg = folders.delete_folder(vault_root, folder_id)
         if not ok:
@@ -1553,7 +1581,7 @@ def _projects_response(vault_root, **extra):
 
 
 def _item_context(body):
-    return {k: body.get(k) for k in ("project_id", "sequence_id", "shot_id")}
+    return {k: body.get(k) for k in ("project_id", "sequence_id", "shot_id", "asset_id")}
 
 
 @_post("/workflow-vault/projects")
@@ -1612,10 +1640,31 @@ async def post_create_shots(request):
         return _projects_response(vault_root, created=result["created"], skipped=result["skipped"])
 
 
+@_post("/workflow-vault/projects/{project_id}/assets")
+async def post_create_assets(request):
+    """Add assets (characters, props, environments...) to a project, beside
+    its sequences. Takes pasted codes and an optional type for all of them."""
+    vault_root, err = _require_vault()
+    if err:
+        return err
+    body, err = await _read_json(request)
+    if err:
+        return err
+    err = _require_admin("create assets")
+    if err:
+        return err
+    async with _write_lock(vault_root):
+        result, err_msg = projects.create_assets(
+            vault_root, request.match_info["project_id"], body.get("codes"), body.get("type"))
+        if err_msg:
+            return _error(err_msg)
+        return _projects_response(vault_root, created=result["created"], skipped=result["skipped"])
+
+
 @_post("/workflow-vault/project-items/update")
 async def post_update_project_item(request):
-    """Rename, re-code, archive or restore a project, sequence or shot (the
-    deepest id given)."""
+    """Rename, re-code, archive or restore a project, sequence, shot or asset
+    (the deepest id given); an asset can also change type."""
     vault_root, err = _require_vault()
     if err:
         return err
@@ -1628,7 +1677,7 @@ async def post_update_project_item(request):
     async with _write_lock(vault_root):
         item, err_msg = projects.update_item(
             vault_root, _item_context(body), code=body.get("code"), name=body.get("name"),
-            archived=body.get("archived"))
+            archived=body.get("archived"), asset_type=body.get("type"))
         if err_msg:
             return _error(err_msg)
         return _projects_response(vault_root, item=item)

@@ -12,8 +12,10 @@ The **studio (multi-user) edition** of ComfyUI Workflow Vault, a fork of
   their own ComfyUI as their own OS user. It's plug and play: the folder's
   `shared_vault.json` makes it shared, and an optional managed studio config
   can define vaults centrally. See [STUDIO.md](STUDIO.md).
-- **Projects:** a project → sequence → shot hierarchy, each place holding its
-  own copies of workflows, with an optional ShotGrid sync. See the README.
+- **Library and Projects:** two sidebar trees. The Library is organized in
+  nested folders (`folders.json`). Projects hold assets and sequences side by
+  side, and sequences hold shots (`projects.json`). Each place keeps its own
+  copies of workflows, with an optional ShotGrid sync. See the README.
 
 A vault that isn't shared must behave exactly like the original single-user
 vault.
@@ -46,11 +48,12 @@ vault.
 | `workflow_vault/utils.py` | Atomic writes, shared permissions, trash |
 | `workflow_vault/locking.py` | Cross-process vault lock (`.wv_lock`) |
 | `workflow_vault/prefs.py` | Per-artist favorites and view settings |
-| `workflow_vault/projects.py` | Project/sequence/shot registry (`projects.json`) |
+| `workflow_vault/projects.py` | Project/asset/sequence/shot registry (`projects.json`) |
+| `workflow_vault/folders.py` | Library folders (`folders.json`) |
 | `workflow_vault/shotgrid.py` | ShotGrid sync |
 | `workflow_vault/entries.py`, `versions.py`, `examples.py`, `media.py`, `storage.py`, `config.py` | Vault data model, mostly from upstream |
 | `workflow_vault/admin.py`, `vault_admin.py` | Admin CLI for the pipeline team |
-| `web/` | Frontend: plain ES modules, no build step. `vault_app.js` is the controller; `vault_projects.js` holds the Projects UI. |
+| `web/` | Frontend: plain ES modules, no build step. `vault_app.js` is the controller; `vault_projects.js` holds the sidebar trees, places, the location picker and the copy dialog. |
 | `tests/` | Integration tests |
 
 ## Conventions

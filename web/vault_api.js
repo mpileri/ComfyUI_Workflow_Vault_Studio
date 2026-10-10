@@ -163,8 +163,14 @@ export const VaultAPI = {
   renameTag: (from, to) => postJSON("/workflow-vault/tags/rename", { from, to }),
   deleteTag: (tag) => postJSON("/workflow-vault/tags/delete", { tag }),
 
-  // Folders are deprecated (the vault is tag-first). The only supported folder
-  // action is the explicit one-time conversion of legacy folder paths to tags.
+  // Library folders (the Library tree in the sidebar).
+  createFolder: (name, parentId) => postJSON("/workflow-vault/folders", { name, parent_id: parentId || null }),
+  updateFolder: (folderId, body) => postJSON(`/workflow-vault/folders/${encodeURIComponent(folderId)}`, body),
+  deleteFolder: (folderId) => postJSON(`/workflow-vault/folders/${encodeURIComponent(folderId)}/delete`, {}),
+  createAssets: (projectId, codes, type) =>
+    postJSON(`/workflow-vault/projects/${encodeURIComponent(projectId)}/assets`, { codes, type }),
+
+  // Copies legacy folder paths into tags (kept for older vaults).
   convertFoldersToTags: (tags) => postJSON("/workflow-vault/convert-folders-to-tags", tags ? { tags } : {}),
 
   mediaUrl: (entryId, relPath, version) => {

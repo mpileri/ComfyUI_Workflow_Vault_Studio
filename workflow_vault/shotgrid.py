@@ -1,4 +1,4 @@
-"""Sync projects, sequences and shots from ShotGrid (Flow Production Tracking).
+"""Sync projects, sequences, shots and assets from ShotGrid (Flow Production Tracking).
 
 Configuration, in the studio config under "shotgrid" (or environment):
 
@@ -71,7 +71,7 @@ def status():
 
 
 def fetch():
-    """Read projects, sequences and shots from ShotGrid. Network; call off the
+    """Read projects, assets, sequences and shots from ShotGrid. Network; call off the
     event loop. Returns a list of {project, sequences, shots} dicts."""
     import shotgun_api3
 
@@ -91,6 +91,7 @@ def fetch():
             "project": p,
             "sequences": sg.find("Sequence", [["project", "is", link]], ["id", "code", "description"]),
             "shots": sg.find("Shot", [["project", "is", link]], ["id", "code", "description", "sg_sequence", "sg_status_list"]),
+            "assets": sg.find("Asset", [["project", "is", link]], ["id", "code", "description", "sg_asset_type", "sg_status_list"]),
         })
     return result
 
@@ -150,12 +151,18 @@ def merge(registry, data):
             status_code = sh.get("sg_status_list")
             _apply(parent.setdefault("shots", []), sh["id"], sh.get("code"), sh.get("description"), "shot",
                    counts["shot"], extra={"status": status_code, "archived": status_code in OMITTED_STATUSES})
+        assets = project.setdefault("assets", [])
+        for a in block.get("assets") or []:
+            status_code = a.get("sg_status_list")
+            _apply(assets, a["id"], a.get("code"), a.get("description"), "asset", counts["asset"],
+                   extra={"type": " ".join(str(a.get("sg_asset_type") or "").split())[:projects.MAX_TYPE_LEN],
+                          "status": status_code, "archived": status_code in OMITTED_STATUSES})
     return counts
 
 
 def summary(counts):
     parts = []
-    for level, label in (("project", "project"), ("sequence", "sequence"), ("shot", "shot")):
+    for level, label in (("project", "project"), ("sequence", "sequence"), ("shot", "shot"), ("asset", "asset")):
         c = counts[level]
         if c["created"] or c["updated"]:
             parts.append(f"{label}s: {c['created']} new, {c['updated']} updated")

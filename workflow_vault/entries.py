@@ -92,13 +92,14 @@ def _name_taken_message(context, codes):
     return f"An entry with this name already exists{where}."
 
 
-def create_entry(vault_root, data, context=None, codes=None):
+def create_entry(vault_root, data, context=None, codes=None, folder_id=None):
     """data keys: name, description, tags, status, generation_types, favorite,
     folder_id, notes, version_label, custom_label, version_notes,
     workflow (dict), thumbnail ({bytes, filename}),
     examples (list of {...}) each with optional input_files/output_files.
     `context` is a validated project location (None: the library) and
-    `codes` its project/sequence/shot codes.
+    `codes` its project/sequence/shot codes. `folder_id` (validated) files a
+    library entry into a library folder.
     Returns (entry_state, error).
     """
     name = (data.get("name") or "").strip()
@@ -147,10 +148,9 @@ def create_entry(vault_root, data, context=None, codes=None):
         "thumbnail_source_compressed": False,
         "compare_image": None,
         "compare_image_source": None,
-        # Folders are deprecated: the vault is tag-first. New entries are never
-        # filed into a folder. Legacy folder_id values on existing entries are
-        # preserved and can be converted to tags (see convert_folders_to_tags).
-        "folder_id": None,
+        # Library folders (folders.json) organize the studio library; workflows
+        # saved into a project live there instead, so they have none.
+        "folder_id": None if context else (folder_id or None),
         "context": context,
         "current_version_id": None,
     }
@@ -255,11 +255,12 @@ def create_entry(vault_root, data, context=None, codes=None):
 
 
 def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None, thumbnail_source_file=None, compare_image_file=None, compare_image_source_file=None,
-                          context=_UNSET, codes=None):
+                          context=_UNSET, codes=None, folder_id=_UNSET):
     """Returns (new_slug, error, warnings).
 
     `context` (validated by the caller, with its `codes`) moves the entry to
-    another project location; _UNSET leaves it where it is.
+    another project location, and `folder_id` (validated) to another library
+    folder; _UNSET leaves either where it is.
 
     `warnings` carries best-effort media that could not be saved. Those are not
     errors — the rest of the update still applies — but they must reach the user
@@ -313,8 +314,12 @@ def update_entry_metadata(vault_root, manifest, slug, data, thumbnail_file=None,
     if "favorite" in data:
         manifest["favorite"] = bool(data["favorite"])
 
-    # Folder assignments are no longer written (folders are deprecated). Any
-    # existing manifest["folder_id"] is left untouched as legacy metadata.
+    # Library folder: only library entries live in one, so moving into a
+    # project leaves it.
+    if folder_id is not _UNSET:
+        manifest["folder_id"] = None if manifest.get("context") else (folder_id or None)
+    elif manifest.get("context"):
+        manifest["folder_id"] = None
 
     # Media/notes writes target the current directory; the manifest's stored
     # paths are entry-relative, so they survive the (possible) rename below.
@@ -454,8 +459,9 @@ def duplicate_entry(vault_root, source_slug, new_name, context=_UNSET, codes=Non
     manifest["name"] = new_name
     manifest["context"] = context
     utils.stamp_created(manifest)
-    # A duplicate is a brand-new entry: tag-first, never filed into a folder.
-    manifest["folder_id"] = None
+    # A copy kept in the library stays in the source's library folder; one
+    # placed in a project has none.
+    manifest["folder_id"] = None if context else src_manifest.get("folder_id")
 
     # Keep only the source's current version; drop the rest of the history.
     _trim_to_single_version(vault_root, new_slug, manifest, src_manifest.get("current_version_id"))

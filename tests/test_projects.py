@@ -145,6 +145,108 @@ class SavingIntoShotsTest(ProjectsTestCase):
         self.assertTrue(state["favorite"])
 
 
+class AssetsTest(ProjectsTestCase):
+    async def make_assets(self):
+        pid, sid, shots = await self.make_structure()
+        body = await self.post(f"/workflow-vault/projects/{pid}/assets", {"codes": "hero_char, sword_prop", "type": "Character"})
+        assets = {a["code"]: a["id"] for a in body["created"]}
+        self.assertEqual(sorted(assets), ["hero_char", "sword_prop"])
+        self.assertEqual(body["created"][0]["type"], "Character")
+        return pid, sid, shots, assets
+
+    async def test_assets_sit_beside_sequences(self):
+        pid, sid, shots, assets = await self.make_assets()
+        state = await self.get("/workflow-vault/state")
+        project = state["projects"][0]
+        self.assertEqual([s["code"] for s in project["sequences"]], ["SQ010"])
+        self.assertEqual([a["code"] for a in project["assets"]], ["hero_char", "sword_prop"])
+        # Duplicates are skipped; artists can't create assets when admins are set.
+        body = await self.post(f"/workflow-vault/projects/{pid}/assets", {"codes": "HERO_CHAR"})
+        self.assertEqual(body["skipped"], ["HERO_CHAR"])
+        self.as_user("bob")
+        await self.post(f"/workflow-vault/projects/{pid}/assets", {"codes": "x"}, status=403)
+
+    async def test_save_copy_and_move_with_assets(self):
+        pid, sid, shots, assets = await self.make_assets()
+        hero = {"project_id": pid, "asset_id": assets["hero_char"]}
+        entry = await self.save_into("Lookdev", hero)
+        self.assertEqual(entry["context"]["asset_id"], assets["hero_char"])
+        self.assertEqual(entry["slug"], "demo_hero_char_lookdev")
+        await self.post_form("/workflow-vault/entries", {"name": "lookdev", "workflow": WORKFLOW, "context": hero}, status=400)
+        await self.save_into("Lookdev", {"project_id": pid, "asset_id": assets["sword_prop"]})  # another asset: fine
+        # An asset is not inside a sequence.
+        await self.post_form("/workflow-vault/entries", {
+            "name": "X", "workflow": WORKFLOW,
+            "context": {"project_id": pid, "sequence_id": sid, "asset_id": assets["hero_char"]}}, status=400)
+
+        master = await self.save_into("Turntable", None)
+        body = await self.post(f"/workflow-vault/entries/{master['id']}/copy-to", {"targets": [
+            hero, {"project_id": pid, "sequence_id": sid, "shot_id": shots["SH0010"]}]})
+        self.assertEqual(sorted(c["where"] for c in body["copied"]), ["DEMO › SQ010 › SH0010", "DEMO › hero_char"])
+
+        state = await self.post_form(f"/workflow-vault/entries/{master['id']}/metadata", {"context": hero, "name": "Turntable 2"})
+        self.assertEqual(state["slug"], "demo_hero_char_turntable_2")
+
+    async def test_delete_and_retype_assets(self):
+        pid, sid, shots, assets = await self.make_assets()
+        await self.save_into("Lookdev", {"project_id": pid, "asset_id": assets["hero_char"]})
+        await self.post("/workflow-vault/project-items/delete", {"project_id": pid, "asset_id": assets["hero_char"]}, status=400)
+        await self.post("/workflow-vault/project-items/delete", {"project_id": pid, "asset_id": assets["sword_prop"]})
+        body = await self.post("/workflow-vault/project-items/update",
+                               {"project_id": pid, "asset_id": assets["hero_char"], "type": "Creature"})
+        self.assertEqual(body["item"]["type"], "Creature")
+        self.assertEqual([a["code"] for a in body["projects"][0]["assets"]], ["hero_char"])
+
+
+class LibraryFoldersTest(ProjectsTestCase):
+    async def make_folders(self):
+        await self.get("/workflow-vault/state")
+        comp = (await self.post("/workflow-vault/folders", {"name": "Comp"}))["folder"]["id"]
+        cleanup = (await self.post("/workflow-vault/folders", {"name": "Cleanup", "parent_id": comp}))["folder"]["id"]
+        return comp, cleanup
+
+    async def save_in_folder(self, name, folder_id, context=None, status=200):
+        return await self.post_form("/workflow-vault/entries", {
+            "name": name, "workflow": WORKFLOW, "folder_id": folder_id, "context": context}, status=status)
+
+    async def test_save_move_and_duplicate_in_folders(self):
+        comp, cleanup = await self.make_folders()
+        entry = await self.save_in_folder("Despill", cleanup)
+        self.assertEqual(entry["folder_id"], cleanup)
+        await self.save_in_folder("X", "folder_NOPE", status=400)
+
+        state = await self.post_form(f"/workflow-vault/entries/{entry['id']}/metadata", {"folder_id": comp})
+        self.assertEqual(state["folder_id"], comp)
+        dup = await self.post(f"/workflow-vault/entries/{entry['id']}/duplicate", {"name": "Despill 2"})
+        self.assertEqual(dup["folder_id"], comp)
+
+        # Project workflows don't live in library folders.
+        pid, sid, shots = await self.make_structure()
+        sh = {"project_id": pid, "sequence_id": sid, "shot_id": shots["SH0010"]}
+        in_shot = await self.save_in_folder("Roto", comp, context=sh)
+        self.assertIsNone(in_shot["folder_id"])
+        state = await self.post_form(f"/workflow-vault/entries/{entry['id']}/metadata", {"context": sh})
+        self.assertIsNone(state["folder_id"])
+        body = await self.post(f"/workflow-vault/entries/{dup['id']}/copy-to", {"targets": [sh]})
+        self.assertEqual(len(body["skipped"]), 0)
+
+    async def test_deleting_a_folder_moves_its_workflows_to_the_library_root(self):
+        comp, cleanup = await self.make_folders()
+        entry = await self.save_in_folder("Despill", cleanup)
+        state = await self.post(f"/workflow-vault/folders/{comp}/delete")
+        self.assertEqual(state["folders"], [])
+        self.assertIsNone(next(e for e in state["entries"] if e["id"] == entry["id"])["folder_id"])
+
+    async def test_only_admins_manage_folders(self):
+        comp, cleanup = await self.make_folders()
+        self.as_user("bob")
+        await self.post("/workflow-vault/folders", {"name": "Mine"}, status=403)
+        await self.post(f"/workflow-vault/folders/{comp}", {"name": "Compositing"}, status=403)
+        await self.post(f"/workflow-vault/folders/{comp}/delete", status=403)
+        # ...but anyone can save into them.
+        await self.save_in_folder("Despill", cleanup)
+
+
 class FakeShotgun:
     """Just enough of shotgun_api3.Shotgun for fetch()."""
     data = {}
@@ -156,7 +258,7 @@ class FakeShotgun:
         if entity == "Project":
             return self.data["Project"]
         project_id = filters[0][2]["id"]
-        return [row for row in self.data[entity] if row.get("_project") == project_id]
+        return [row for row in self.data.get(entity, []) if row.get("_project") == project_id]
 
 
 SG_DATA = {
@@ -166,6 +268,10 @@ SG_DATA = {
         {"id": 11, "code": "SQ010_SH0010", "sg_sequence": {"id": 1}, "sg_status_list": "ip", "_project": 70},
         {"id": 12, "code": "SQ010_SH0020", "sg_sequence": {"id": 1}, "sg_status_list": "omt", "_project": 70},
         {"id": 13, "code": "PICKUP_01", "sg_sequence": None, "sg_status_list": "wtg", "_project": 70},
+    ],
+    "Asset": [
+        {"id": 21, "code": "hero_char", "sg_asset_type": "Character", "sg_status_list": "ip", "_project": 70},
+        {"id": 22, "code": "old_prop", "sg_asset_type": "Prop", "sg_status_list": "omt", "_project": 70},
     ],
 }
 
@@ -188,6 +294,7 @@ class ShotGridTest(ProjectsTestCase):
         counts = shotgrid.merge(registry, data)
         self.assertEqual(counts["project"], {"created": 0, "updated": 1})  # linked, not duplicated
         self.assertEqual(counts["shot"]["created"], 3)
+        self.assertEqual(counts["asset"]["created"], 2)
         (project,) = registry["projects"]
         self.assertEqual(project["id"], "project_MANUAL")
         self.assertEqual(project["shotgrid_id"], 70)
@@ -196,6 +303,9 @@ class ShotGridTest(ProjectsTestCase):
         shots = {s["code"]: s for s in seqs["SQ010"]["shots"]}
         self.assertTrue(shots["SQ010_SH0020"]["archived"])  # omitted in ShotGrid
         self.assertFalse(shots["SQ010_SH0010"]["archived"])
+        assets = {a["code"]: a for a in project["assets"]}
+        self.assertEqual(assets["hero_char"]["type"], "Character")
+        self.assertTrue(assets["old_prop"]["archived"])
         again = shotgrid.merge(registry, data)
         self.assertTrue(all(c == {"created": 0, "updated": 0} for c in again.values()), again)
 

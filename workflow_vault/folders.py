@@ -1,4 +1,7 @@
-"""Nested folder management, stored entirely in folders.json."""
+"""Library folders: the nested folders that organize the studio library,
+created and managed from the sidebar. Stored in folders.json; each
+library entry's manifest names its folder in `folder_id`. Workflows saved
+into a project never have one."""
 
 from . import storage, utils
 

@@ -122,8 +122,8 @@ Windows) rather than in the extension folder.
 
 ## ShotGrid sync
 
-Projects, sequences and shots can be pulled from ShotGrid (Flow Production
-Tracking) instead of being typed in. Add to the studio config:
+Projects, assets, sequences and shots can be pulled from ShotGrid (Flow
+Production Tracking) instead of being typed in. Add to the studio config:
 
 ```json
 "shotgrid": {
@@ -139,7 +139,7 @@ Tracking) instead of being typed in. Add to the studio config:
 `$SHOTGRID_SCRIPT_KEY`. In that case no config file is needed.
 
 - Create a **script** in ShotGrid (Admin → Scripts) with read access to
-  Projects, Sequences and Shots; `script_name` is its name.
+  Projects, Assets, Sequences and Shots; `script_name` is its name.
 - The **script key is a password.** Never put it inside the vault folder or a
   config file everyone can read. Use `$SHOTGRID_SCRIPT_KEY`, or a key file only
   the pipeline account can read (`script_key_file`).
@@ -155,10 +155,11 @@ python vault_admin.py shotgrid-sync --vault /path/to/vault
 Admins can also sync from the vault sidebar (sync icon) on a machine that has
 the key and the package. The sync only adds and updates:
 - ShotGrid-linked items follow ShotGrid's codes and names.
-- Omitted shots (`omt`) are archived.
+- Omitted shots and assets (`omt`) are archived, and each asset gets its
+  ShotGrid asset type.
 - Shots without a sequence go under `NO_SEQUENCE`.
-- Projects, sequences and shots created by hand with the same code are linked,
-  not duplicated.
+- Projects, assets, sequences and shots created by hand with the same code are
+  linked, not duplicated.
 - Nothing is ever deleted, since a shot may already hold workflows.
 
 ## Network storage notes
@@ -190,7 +191,7 @@ python vault_admin.py fix-permissions --vault <folder>     open up everyone's fi
 python vault_admin.py trash list --vault <folder>          deleted items, who deleted them, when
 python vault_admin.py trash restore <id> --vault <folder>  put one back where it was
 python vault_admin.py trash purge --older-than 30 ...      permanently delete old trash
-python vault_admin.py shotgrid-sync --vault <folder>       pull projects, sequences and shots
+python vault_admin.py shotgrid-sync --vault <folder>       pull projects, assets, sequences and shots
 ```
 
 ## Environment variables

@@ -11,40 +11,67 @@
 > favorites, authorship, and optional admins. **Guide: [STUDIO.md](STUDIO.md).**
 > Vaults that aren't shared behave exactly like the original, documented below.
 >
-> It also adds **Projects** (see [below](#projects-studio-edition)): save
-> workflows into a project, a sequence, or a shot, each with its own copies.
+> It also adds a **Library** tree of folders and **Projects** (see
+> [below](#library-and-projects-studio-edition)): save workflows into a
+> project, an asset, a sequence or a shot, each with its own copies.
 
-## Projects (studio edition)
+## Library and Projects (studio edition)
 
-Next to the studio-wide **Library**, workflows can live in a
-**project → sequence → shot** hierarchy.
+The sidebar has two trees:
 
-- **Sidebar → Projects** lists the Library and every project. Inside a project,
-  click through its sequences and shots (chips with the number of workflows in
-  each). A shot also shows what's saved in its sequence and its project, under
+```
+LIBRARY                     PROJECTS
+  All workflows               ▾ DEMO
+  ▾ Comp                          hero_character   (asset)
+      Cleanup                     sword_prop       (asset)
+  ▸ Lookdev                     ▾ SQ010
+                                    SH0010
+                                    SH0020
+```
+
+- **Library:** the studio's reusable workflows, organized in nested
+  **folders** (Comp › Cleanup, Lookdev…). A folder shows its workflows and its
+  subfolders'; *All workflows* shows the whole Library.
+- **Projects:** each project holds its **assets** (characters, props,
+  environments…, with an optional type) and **sequences** side by side, and
+  each sequence its **shots**. Every project, asset, sequence and shot is a
+  place to save workflows. A shot also shows what's saved in its sequence and
+  its project, and an asset what's in its project, under
   *From sequence …* / *From project …*.
-- **Saving:** the save wizard has a **Save to** picker (Library, or a project,
-  sequence or shot) that defaults to the place you're looking at. It shows who
+- Click a row to open that place; its arrow expands or collapses it without
+  leaving where you are. The branch you're in stays open, and big productions
+  get a **Filter shots and assets…** box.
+- **Saving:** the save wizard has a **Save to** picker (a Library folder, or a
+  project, asset, sequence or shot) that defaults to the place you're looking
+  at. It shows who
   you're saving as, and **Add my name to the workflow name** appends your login,
   e.g. `comp_cleanup_j.doe`, so several artists can each keep a copy in one
   shot (with a live preview; the switch remembers your choice).
 - **Own copies per shot:** open any workflow and use **⋯ → Copy to shots…** to
-  pick shots (or whole sequences / the project) in one go. Each place gets an
+  pick shots and assets (or whole sequences / the project) in one go. Each place gets an
   independent copy with the current version, saved under your name, so
   tweaking one shot never changes another. Names only need to be unique within
   the same place.
 - **Moving:** the entry's **Details** tab has a **Location** field.
-- **Creating the structure:** the **+** in the sidebar (new project), then
-  **+ Sequence** / **+ Shots** (paste a list of shot codes) inside it; rename,
-  archive or delete from the **⋯** next to the breadcrumb. A project, sequence
-  or shot can only be deleted when no workflow is saved in it — archive it
-  instead. In a shared vault with admins listed, only admins change the structure.
-- **ShotGrid:** projects, sequences and shots can be synced from ShotGrid,
+- **Creating the structure:** the **+** next to *Library* (new folder) or
+  *Projects* (new project). Then use the **⋯** next to the breadcrumb:
+  - in a project: *Add assets…* and *New sequence…*;
+  - in a sequence: *Add shots…* (paste a list of codes);
+  - in a folder: *New subfolder…*;
+  - anywhere: rename, archive or delete.
+- **Deleting:** a project, asset, sequence or shot can only be deleted when no
+  workflow is saved in it; archive it instead. Deleting a Library folder moves
+  its workflows to the Library root. In a shared vault with admins listed, only
+  admins change the structure.
+- **ShotGrid:** projects, assets, sequences and shots can be synced from ShotGrid,
   from the sidebar (sync icon) or `python vault_admin.py shotgrid-sync`
   (cron-friendly). See [STUDIO.md](STUDIO.md#shotgrid-sync).
-- On disk, the hierarchy is `projects.json` in the vault root, and each entry's
-  manifest records its `context`; entry folders of project workflows are
-  prefixed with their codes (`demo_sq010_sh0010_comp_cleanup/`).
+- On disk:
+  - Library folders are `folders.json` and projects are `projects.json`, both
+    in the vault root.
+  - Each entry's manifest records its `folder_id` or its project `context`.
+  - Entry folders of project workflows are prefixed with their codes, e.g.
+    `demo_sq010_sh0010_comp_cleanup/`.
 
 A local, single-user workflow library built into ComfyUI. Save workflows as
 structured "vault entries" with versions, example media, and Markdown
@@ -238,13 +265,9 @@ Five tabs, each with a count badge where it applies:
 - **Tags** are added per entry in the Save wizard and the entry editor, filtered
   on from the **sidebar Tags facet** (multi-select, AND), and managed vault-wide
   in **Settings → Organization** (rename, merge, delete across all entries).
-- **Legacy folders:** vaults created before folders were deprecated keep their
-  folder data untouched. **Settings → Organization** shows a one-time conversion
-  that turns folder-path names into plain tags (e.g. `Image / Cleanup` →
-  `image`, `cleanup`). It lists each folder name with a checkbox and a count, so
-  you choose which to keep and untick any junk folders before converting.
-  Nothing is deleted — `folders.json` and the entries' folder assignments are
-  preserved, so it's safe to re-run.
+- **Folders (studio edition):** folders are back as the sidebar's **Library**
+  tree (see "Library and Projects" above). Vaults that had folders from older
+  versions show them there automatically.
 
 ### Image compression (Pillow)
 
@@ -276,10 +299,6 @@ Vault Settings (⚙) is organized into four tabs:
 - **Organization**
   - **Tags** — rename, merge (rename to an existing tag), or delete tags across
     all entries.
-  - **Legacy folders** — appears only if the vault still has folder assignments
-    from before folders were deprecated; offers a one-time conversion of folder
-    paths into tags, with a checkbox per folder name so you choose which to
-    apply. Folder data is preserved, never deleted.
 - **Storage**
   - **Footprint** — a breakdown of disk usage: total on disk, a bar splitting
     space across example media / thumbnails / workflows, and counts of

@@ -4766,62 +4766,6 @@
   color: var(--wv-muted);
 }
 
-.wv-scope-children {
-  margin: -4px 0 18px;
-}
-
-.wv-scope-children-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.wv-scope-filter {
-  max-width: 220px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-.wv-scope-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.wv-scope-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--wv-border);
-  border-radius: 999px;
-  background: var(--wv-surface);
-  color: var(--wv-fg);
-  font-size: 12.5px;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.wv-scope-chip:hover {
-  border-color: var(--wv-accent);
-}
-
-.wv-scope-chip-empty {
-  color: var(--wv-muted);
-}
-
-.wv-scope-chip-count {
-  color: var(--wv-muted);
-  font-size: 11px;
-}
-
-.wv-scope-chip-add {
-  border-style: dashed;
-  color: var(--wv-accent);
-  background: none;
-}
-
 .wv-inherited-header {
   margin-top: 26px;
 }
@@ -4944,4 +4888,35 @@
 .wv-addname-preview {
   margin-top: 4px;
   font-family: var(--wv-mono, ui-monospace, monospace);
+}
+
+/* Sidebar trees (Library folders, Projects) */
+
+.wv-tree-row {
+  gap: 4px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.wv-tree-toggle {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--wv-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.wv-tree-toggle:hover {
+  color: var(--wv-fg);
+}
+
+.wv-tree-toggle-spacer {
+  cursor: default;
 }

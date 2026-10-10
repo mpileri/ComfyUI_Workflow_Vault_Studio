@@ -8,15 +8,15 @@ import { buildCompareSlider } from "./vault_compare_slider.js";
 import { tagCountsFrom } from "./vault_tag_input.js";
 import { renderProfileSwitcher } from "./vault_profiles.js";
 import {
-  renderProjectsSidebar,
+  renderPlacesSidebar,
   appendScopeCrumbs,
-  renderScopeChildren,
   entriesAt,
   parentScopes,
   findContext,
-  contextLabel,
-  contextResolves,
-  sameContext,
+  placeLabel,
+  scopeResolves,
+  entryPlaceLabel,
+  isFolderScope,
 } from "./vault_projects.js";
 import { showShortcutsDialog } from "./vault_shortcuts.js";
 
@@ -427,11 +427,11 @@ function renderInheritedSections(main, controller) {
 
 export function renderGridBody(controller) {
   const body = el("div", { className: "wv-body" });
-  if (controller.scope && !contextResolves(controller.state, controller.scope)) controller.scope = null;
+  if (controller.scope && !scopeResolves(controller.state, controller.scope)) controller.scope = null;
 
   const sidebar = el("div", { className: "wv-sidebar" });
   sidebar.appendChild(renderProfileSwitcher(controller));
-  renderProjectsSidebar(sidebar, controller);
+  renderPlacesSidebar(sidebar, controller);
   renderGenerationTypeFilter(sidebar, controller);
   renderTagFilter(sidebar, controller);
   sidebar.appendChild(renderSidebarFooter());
@@ -447,10 +447,6 @@ export function renderGridBody(controller) {
 
   const main = el("div", { className: "wv-main" });
   main.appendChild(renderBreadcrumb(controller));
-  if (controller.scope) {
-    const children = renderScopeChildren(controller);
-    if (children) main.appendChild(children);
-  }
 
   const base = scopeBase(controller);
   const entries = filterEntries(controller, base);
@@ -627,8 +623,10 @@ function renderBreadcrumb(controller) {
   if (controller.scope) {
     appendScopeCrumbs(row, controller);
   } else {
-    // Once the vault has projects, the unscoped grid is the studio Library.
-    const title = (controller.state.projects || []).length ? "Library" : "All Workflows";
+    // Once the vault has projects or library folders, the unscoped grid is the
+    // whole studio Library.
+    const { projects, folders } = controller.state;
+    const title = (projects || []).length || (folders || []).length ? "Library" : "All Workflows";
     row.appendChild(el("span", { className: "wv-breadcrumb-item wv-breadcrumb-active" }, [title]));
   }
 
@@ -843,15 +841,13 @@ function renderCard(entry, controller) {
 
   const body = el("div", { className: "wv-card-body" });
   body.appendChild(el("div", { className: "wv-card-title", title: entry.name }, [entry.name]));
-  // Where a project workflow lives, when the grid is showing it from elsewhere
-  // (a Library search, or a shot's inherited sequence/project workflows).
+  // Where the workflow lives, when the grid is showing it from elsewhere (a
+  // Library search, a parent folder, a shot's inherited workflows).
   const { state } = controller;
-  if (entry.context?.project_id && !sameContext(entry.context, controller.scope) && contextResolves(state, entry.context)) {
+  const place = entryPlaceLabel(state, entry, controller.scope);
+  if (place) {
     body.appendChild(
-      el("div", { className: "wv-card-context", title: `Saved in ${contextLabel(state, entry.context)}` }, [
-        el("i", { className: "pi pi-video" }),
-        contextLabel(state, entry.context),
-      ])
+      el("div", { className: "wv-card-context", title: `Saved in ${place.text}` }, [el("i", { className: place.icon }), place.text])
     );
   }
 
@@ -968,12 +964,15 @@ function renderEmptyState(controller, base) {
   const wrap = el("div", { className: "wv-empty" });
 
   if (!hasAnyEntries && controller.scope) {
-    const where = contextLabel(state, controller.scope);
-    wrap.appendChild(el("div", { className: "wv-empty-icon" }, [el("i", { className: "pi pi-video" })]));
+    const where = placeLabel(state, controller.scope);
+    const folder = isFolderScope(controller.scope);
+    wrap.appendChild(el("div", { className: "wv-empty-icon" }, [el("i", { className: folder ? "pi pi-folder-open" : "pi pi-video" })]));
     wrap.appendChild(el("div", { className: "wv-empty-title" }, [`Nothing saved in ${where} yet`]));
     wrap.appendChild(
       el("div", { className: "wv-empty-text" }, [
-        "Save the current canvas here, or open a workflow from the Library and use ⋯ › Copy to shots… to give this place its own copy.",
+        folder
+          ? "Save the current canvas here, or move a workflow here from its Details tab (Location)."
+          : "Save the current canvas here, or open a workflow from the Library and use ⋯ › Copy to shots… to give this place its own copy.",
       ])
     );
     wrap.appendChild(
